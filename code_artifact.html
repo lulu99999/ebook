@@ -1,0 +1,3275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>我思故我在 - 智能艺术阅读空间</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.447.0/dist/umd/lucide.min.js"></script>
+    <!-- PDF.js 核心解析引擎 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>
+        if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+        }
+    </script>
+    <!-- JSZip 解压引擎，用于 EPUB 解析 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Kindle / MOBI 解析引擎 (foliate-js) -->
+    <script type="module">
+        try {
+        const mobiModule = await import('./vendor/mobi.js');
+        const { isMOBI, MOBI } = mobiModule;
+
+        function htmlToPlainText(doc) {
+            let fullText = '';
+            const elements = doc.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, blockquote');
+            elements.forEach(el => {
+                const txt = el.textContent.trim();
+                if (!txt) return;
+                if (/^H[1-6]$/i.test(el.tagName)) {
+                    fullText += `\n\n第[章节] ${txt}\n\n`;
+                } else {
+                    fullText += `${txt}\n\n`;
+                }
+            });
+            if (!fullText.trim()) {
+                fullText = (doc.body?.textContent || doc.documentElement?.textContent || '').trim();
+            }
+            return fullText;
+        }
+
+        window.parseKindleToText = async function(file) {
+            if (!await isMOBI(file)) {
+                throw new Error('KINDLE_UNSUPPORTED');
+            }
+            const book = await new MOBI({ unzlib: (data) => data }).open(file);
+            let fullText = '';
+            for (const section of book.sections) {
+                const doc = await section.createDocument();
+                fullText += htmlToPlainText(doc);
+            }
+            const author = book.metadata?.author;
+            return {
+                title: book.metadata?.title || file.name.replace(/\.[^.]+$/, ''),
+                author: Array.isArray(author) ? (author[0] || 'Kindle 经典') : (author || 'Kindle 经典'),
+                text: fullText.trim()
+            };
+        };
+
+        window.kindleParserReady = true;
+        window.dispatchEvent(new Event('kindle-parser-ready'));
+        } catch (err) {
+            console.warn('Kindle 解析模块加载失败，MOBI/AZW 导入暂不可用:', err.message);
+            window.parseKindleToText = null;
+        }
+    </script>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        sepia: {
+                            50: '#FAF6EE',   // 大师级雅致沙
+                            100: '#F4ECE1',
+                            200: '#E9DEC9',
+                            800: '#4A3728',
+                            900: '#2C1B10',
+                        },
+                        eye: {
+                            50: '#F0F7F4',   // 松针护眼绿
+                            100: '#E1EFEA',
+                            200: '#C2DFD5',
+                            800: '#143C30',
+                            900: '#071F18',
+                        },
+                        slate: {
+                            50: '#F8F9FA',   // 静谧灰
+                            100: '#E9ECEF',
+                            200: '#DEE2E6',
+                            800: '#343A40',
+                            900: '#212529',
+                        },
+                        midnight: {
+                            50: '#F1F5F9',   // 深邃蓝
+                            900: '#0F172A',
+                            950: '#070A13'
+                        }
+                    },
+                    boxShadow: {
+                        'premium': '0 10px 30px -10px rgba(0, 0, 0, 0.08), 0 1px 3px -1px rgba(0, 0, 0, 0.03)',
+                        'floating': '0 20px 40px -15px rgba(0, 0, 0, 0.15)',
+                        'book': '5px 5px 15px rgba(0, 0, 0, 0.12), 1px 1px 3px rgba(0, 0, 0, 0.06)'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        body {
+            -webkit-tap-highlight-color: transparent;
+            background-color: #FAFAFC;
+        }
+        .ui-no-select {
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        #reader-view,
+        #reader-viewport,
+        #reader-viewport p,
+        #reader-viewport span[data-note-id] {
+            -webkit-user-select: text !important;
+            user-select: text !important;
+        }
+        #reader-view header,
+        #reader-view footer,
+        #reader-view button,
+        #reader-view input,
+        #reader-view select,
+        #reader-view textarea {
+            -webkit-user-select: none !important;
+            user-select: none !important;
+        }
+        #selection-popover {
+            pointer-events: auto;
+        }
+        /* 朗读高亮特效 */
+        .speech-highlight {
+            background-color: rgba(239, 68, 68, 0.12);
+            border-bottom: 2px dashed #ef4444;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 4px;
+        }
+        /* 安全区底部与顶部自适应填充 */
+        .safe-pb {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .safe-pt {
+            padding-top: env(safe-area-inset-top);
+        }
+        /* 拟物化实体书右侧边缘立体反光 */
+        .book-shine {
+            background: linear-gradient(
+                to right,
+                rgba(255, 255, 255, 0) 0%,
+                rgba(255, 255, 255, 0.05) 50%,
+                rgba(0, 0, 0, 0.15) 100%
+            );
+        }
+        /* 模拟真实的物理折页书脊深色渐变阴影 */
+        .book-spine-shadow {
+            background: linear-gradient(
+                to right,
+                rgba(0, 0, 0, 0.4) 0%,
+                rgba(0, 0, 0, 0.1) 15%,
+                rgba(255, 255, 255, 0.2) 20%,
+                rgba(255, 255, 255, 0) 25%
+            );
+        }
+        /* 新增：纸张纹理效果 */
+        .paper-texture {
+            background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+        }
+        ::selection {
+            background-color: rgba(99, 102, 241, 0.3);
+        }
+        .mark-yellow { background-color: rgba(253, 224, 71, 0.45); border-bottom: 2px solid #eab308; }
+        .mark-green { background-color: rgba(74, 222, 128, 0.45); border-bottom: 2px solid #22c55e; }
+        .mark-pink { background-color: rgba(244, 114, 182, 0.45); border-bottom: 2px solid #ec4899; }
+        .mark-blue { background-color: rgba(96, 165, 250, 0.45); border-bottom: 2px solid #3b82f6; }
+        .mark-purple { background-color: rgba(192, 132, 252, 0.45); border-bottom: 2px solid #a855f7; }
+        
+        /* 横屏手势滑动模式布局样式 */
+        .paged-mode {
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            scroll-snap-type: x mandatory !important;
+            scroll-behavior: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .paged-mode #reader-content {
+            max-width: none !important;
+            margin: 0 !important;
+            width: auto !important;
+            display: flex !important;
+            flex-direction: row !important;
+            gap: 0 !important;
+        }
+        .paged-page {
+            flex: 0 0 auto !important;
+            box-sizing: border-box !important;
+            scroll-snap-align: start !important;
+            overflow: hidden !important;
+        }
+    </style>
+</head>
+<body class="text-zinc-800 font-sans transition-colors duration-300 overflow-hidden h-screen w-screen flex flex-col dark:bg-zinc-950 dark:text-zinc-200">
+
+    <audio id="silent-player" loop src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA" class="hidden"></audio>
+
+    <div id="splash-screen" class="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-zinc-950 transition-opacity duration-1000">
+        <div class="flex flex-col items-center text-center space-y-8 animate-in fade-in zoom-in duration-1000">
+            <!-- 书本图标：书脊 + 书页线条 -->
+            <div class="relative w-24 h-24 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-3xl flex items-center justify-center shadow-2xl shadow-indigo-500/30 overflow-hidden">
+                <svg class="w-14 h-14 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                    <path d="M8 7h8"></path>
+                    <path d="M8 11h6"></path>
+                    <path d="M8 15h4"></path>
+                </svg>
+            </div>
+            <div class="space-y-3">
+                <h1 class="text-4xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-white to-zinc-500 tracking-tighter">我思故我在</h1>
+                <p class="text-zinc-400 font-bold tracking-widest uppercase text-xs">阅读给我力量</p>
+            </div>
+            <button onclick="dismissSplash()" class="group relative px-8 py-3 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden hover:bg-white/10 transition-all active:scale-95">
+                <span class="relative z-10 text-white font-black text-sm tracking-widest">开启心流</span>
+                <div class="absolute inset-0 bg-gradient-to-r from-indigo-500 to-purple-600 opacity-0 group-hover:opacity-20 transition-opacity"></div>
+            </button>
+        </div>
+        <p class="absolute bottom-10 text-[10px] text-zinc-600 font-bold tracking-widest uppercase">Cogito, ergo sum</p>
+    </div>
+
+    <div id="app" class="flex flex-col h-full w-full relative">
+
+        <header class="ui-no-select bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-100 dark:border-zinc-800/80 px-5 py-4 flex items-center justify-between safe-pt shrink-0 z-10 transition-colors duration-300">
+            <div class="flex items-center space-x-3">
+                <!-- 简约书之图标 -->
+                <div class="relative w-9 h-9 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-md shadow-indigo-500/20 overflow-hidden">
+                <svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                    <path d="M8 7h8"></path>
+                    <path d="M8 11h6"></path>
+                    <path d="M8 15h4"></path>
+                </svg>
+                <span class="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-pink-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-pink-500"></span>
+                    </span>
+                </div>
+                <div class="flex flex-col">
+                    <span class="font-black text-base tracking-wider bg-gradient-to-r from-zinc-900 via-indigo-950 to-purple-900 dark:from-white dark:via-zinc-100 dark:to-zinc-300 bg-clip-text text-transparent">我思故我在</span>
+                    <span class="text-[9px] uppercase tracking-widest text-zinc-400 dark:text-zinc-500 font-bold">Cogito, ergo sum</span>
+                </div>
+            </div>
+            
+            <div class="flex items-center space-x-3">
+                <!-- 导入图书按钮 -->
+                <label class="cursor-pointer bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-2 shadow-sm transition-all active:scale-95 duration-200">
+                    <i data-lucide="folder-open" class="w-4 h-4"></i>
+                    <span>导入书籍</span>
+                    <input type="file" id="file-input" accept=".txt,.pdf,.epub,.mobi,.azw,.azw3,.prc" class="hidden" onchange="handleBookImport(event)">
+                </label>
+                <!-- 主题一键快捷切换 -->
+                <button onclick="toggleDarkMode()" class="text-zinc-500 dark:text-zinc-400 p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90 transition-all duration-200">
+                    <i id="theme-icon" data-lucide="moon" class="w-4.5 h-4.5"></i>
+                </button>
+            </div>
+        </header>
+
+        <main class="flex-grow overflow-hidden relative">
+            
+            <!-- 1. 精致书架标签页 -->
+            <section id="tab-bookshelf" class="absolute inset-0 overflow-y-auto px-5 py-6 no-scrollbar flex flex-col space-y-6">
+                
+                <!-- 拟物历史续读卡片 -->
+                <div id="recent-read-card" class="bg-gradient-to-r from-zinc-900 via-slate-900 to-indigo-950 text-white p-6 rounded-3xl shadow-premium relative overflow-hidden hidden">
+                    <div class="absolute right-[-10px] top-[-10px] opacity-[0.04] text-white">
+                        <i data-lucide="quote" class="w-40 h-40"></i>
+                    </div>
+                    <span class="text-[10px] bg-white/10 text-indigo-200 uppercase font-black tracking-widest px-2.5 py-1 rounded-full">当前正在读</span>
+                    <h3 id="recent-title" class="font-extrabold text-lg mt-3 truncate text-white">未开始阅读</h3>
+                    <p id="recent-info" class="text-xs text-zinc-300 mt-1">开始您今天的阅读探索，开启心灵之旅吧！</p>
+                    <div class="mt-5 flex items-center justify-between">
+                        <div class="w-7/12 bg-white/10 rounded-full h-1.5 overflow-hidden">
+                            <div id="recent-progress-bar" class="bg-gradient-to-r from-indigo-400 to-purple-500 h-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <button onclick="openRecentBook()" class="bg-white text-zinc-950 text-xs font-black px-6 py-3 rounded-2xl shadow-premium active:scale-95 transition-all flex items-center space-x-1.5 shrink-0">
+                            <span>继续阅读</span>
+                            <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 每日阅读统计卡片 -->
+                <div class="bg-gradient-to-br from-indigo-50/50 to-purple-50/20 dark:from-indigo-950/20 dark:to-zinc-900 border border-indigo-100/50 dark:border-indigo-900/30 p-5 rounded-3xl flex items-center justify-between shadow-premium">
+                    <div class="flex items-center space-x-4">
+                        <div class="bg-indigo-600/10 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 p-3 rounded-2xl">
+                            <i data-lucide="sparkles" class="w-5 h-5"></i>
+                        </div>
+                        <div>
+                            <h4 class="text-xs font-black text-zinc-900 dark:text-zinc-200 tracking-wide">今日阅读思考</h4>
+                            <p id="shelf-daily-progress" class="text-xs text-indigo-600/90 dark:text-indigo-400 font-extrabold mt-0.5">已阅读 0 / 30 分钟</p>
+                        </div>
+                    </div>
+                    <button onclick="switchTab('stats')" class="text-xs bg-white dark:bg-zinc-800 text-indigo-600 dark:text-indigo-400 font-black px-3 py-2 rounded-xl shadow-premium active:scale-95 transition-all">
+                        查看深度分析
+                    </button>
+                </div>
+
+                <!-- 我的书架 -->
+                <div class="pb-10">
+                    <h3 class="font-black text-zinc-900 dark:text-zinc-100 text-base mb-4 flex items-center justify-between">
+                        <span>我的馆藏书库 <span id="book-count" class="text-xs font-bold text-zinc-400"> (0)</span></span>
+                        <span class="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold">支持 EPUB / PDF / TXT / MOBI / AZW / AZW3 拖拽导入</span>
+                    </h3>
+                    
+                    <!-- 极具实体感的网格书架 -->
+                    <div id="bookshelf-grid" class="grid grid-cols-3 gap-x-5 gap-y-7">
+                        <!-- 动态载入的拟物实体书籍 -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- 2. 数据分析与统计标签页 -->
+            <section id="tab-stats" class="absolute inset-0 overflow-y-auto px-5 py-6 no-scrollbar flex flex-col space-y-6 hidden">
+                <div class="bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-zinc-100 dark:border-zinc-800 shadow-premium">
+                    <h3 class="font-extrabold text-zinc-900 dark:text-zinc-100 text-base mb-5">今日统计简报</h3>
+                    
+                    <div class="flex flex-col items-center justify-center py-4">
+                        <div class="relative w-44 h-44 flex items-center justify-center">
+                            <svg class="w-full h-full transform -rotate-90">
+                                <circle cx="88" cy="88" r="76" stroke-width="8" stroke="currentColor" class="text-zinc-100 dark:text-zinc-800" fill="transparent"></circle>
+                                <circle id="stat-progress-circle" cx="88" cy="88" r="76" stroke-width="8" stroke="currentColor" class="text-indigo-600 transition-all duration-1000" fill="transparent" stroke-dasharray="477" stroke-dashoffset="477" stroke-linecap="round"></circle>
+                            </svg>
+                            <div class="absolute flex flex-col items-center justify-center text-center">
+                                <span id="stat-today-minutes" class="text-4xl font-black text-zinc-900 dark:text-white">0</span>
+                                <span class="text-[10px] text-zinc-400 uppercase tracking-widest font-bold mt-1">今日阅读 (分钟)</span>
+                            </div>
+                        </div>
+                        <p class="text-xs text-zinc-500 mt-5 text-center font-medium">
+                            今日目标：30分钟 | 达成率 <span id="stat-achievement" class="font-extrabold text-indigo-600">0%</span>
+                        </p>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-3 border-t border-zinc-100 dark:border-zinc-800 pt-5 mt-4">
+                        <div class="text-center">
+                            <span id="stat-total-books" class="block font-black text-xl text-zinc-900 dark:text-white">0</span>
+                            <span class="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">总藏书</span>
+                        </div>
+                        <div class="text-center border-x border-zinc-100 dark:border-zinc-800">
+                            <span id="stat-history-reads" class="block font-black text-xl text-zinc-900 dark:text-white">0</span>
+                            <span class="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">足迹书籍</span>
+                        </div>
+                        <div class="text-center">
+                            <span id="stat-total-minutes" class="block font-black text-xl text-zinc-900 dark:text-white">0</span>
+                            <span class="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">累计时长(分)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-zinc-100 dark:border-zinc-800 shadow-premium">
+                    <h3 class="font-extrabold text-zinc-900 dark:text-zinc-100 text-sm mb-5 flex items-center justify-between">
+                        <span>本周思想趋势 (分钟)</span>
+                        <button onclick="clearReadingStats()" class="text-[10px] text-red-500 hover:underline font-bold">清空记录</button>
+                    </h3>
+                    <div class="h-44 w-full relative">
+                        <svg id="weekly-chart" class="w-full h-full" viewBox="0 0 350 150">
+                            <!-- SVG 绘制曲线 -->
+                        </svg>
+                    </div>
+                    <div class="flex justify-between px-2 text-[10px] text-zinc-400 font-bold mt-3">
+                        <span>周一</span>
+                        <span>周二</span>
+                        <span>周三</span>
+                        <span>周四</span>
+                        <span>周五</span>
+                        <span>周六</span>
+                        <span>周日</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 3. 书签与历史记录标签页 -->
+            <section id="tab-history" class="absolute inset-0 overflow-y-auto px-5 py-6 no-scrollbar flex flex-col space-y-4 hidden">
+                <h3 class="font-extrabold text-zinc-900 dark:text-zinc-100 text-base">思想印记 - 阅读足迹</h3>
+                <div id="history-list" class="space-y-5">
+                    <!-- 动态载入历史记录 -->
+                </div>
+            </section>
+        </main>
+
+        <nav class="ui-no-select bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-100 dark:border-zinc-800/80 flex items-center justify-around py-2.5 safe-pb shrink-0 z-10 transition-colors duration-300">
+            <button onclick="switchTab('bookshelf')" id="nav-bookshelf" class="flex flex-col items-center justify-center flex-1 text-indigo-600 transition-colors py-1 active:scale-90">
+                <i data-lucide="library" class="w-5 h-5"></i>
+                <span class="text-[10px] mt-1.5 font-bold tracking-wider">书屋</span>
+            </button>
+            <button onclick="switchTab('stats')" id="nav-stats" class="flex flex-col items-center justify-center flex-1 text-zinc-400 transition-colors py-1 active:scale-90">
+                <i data-lucide="line-chart" class="w-5 h-5"></i>
+                <span class="text-[10px] mt-1.5 font-bold tracking-wider">心流</span>
+            </button>
+            <button onclick="switchTab('history')" id="nav-history" class="flex flex-col items-center justify-center flex-1 text-zinc-400 transition-colors py-1 active:scale-90">
+                <i data-lucide="compass" class="w-5 h-5"></i>
+                <span class="text-[10px] mt-1.5 font-bold tracking-wider">印记</span>
+            </button>
+        </nav>
+
+        <div id="reader-view" class="fixed inset-0 bg-white dark:bg-zinc-950 z-50 flex flex-col hidden transition-colors duration-300">
+            
+            <!-- 阅读器顶栏 -->
+            <header id="reader-header" class="bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-b border-zinc-100 dark:border-zinc-800/80 px-4 py-3 flex items-center justify-between safe-pt z-10 transition-all duration-300">
+                <div class="flex items-center space-x-2">
+                    <button onclick="closeReader()" class="p-2 rounded-xl text-zinc-600 dark:text-zinc-300 bg-zinc-50 dark:bg-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-700 active:scale-90 transition-transform">
+                        <i data-lucide="chevron-left" class="w-5.5 h-5.5"></i>
+                    </button>
+                    <div class="overflow-hidden max-w-[140px] sm:max-w-[180px]">
+                        <h4 id="reader-book-title" class="font-extrabold text-sm truncate text-zinc-800 dark:text-zinc-100">经典名著</h4>
+                        <p id="reader-chapter-title" class="text-[9px] font-bold text-zinc-400 uppercase tracking-widest truncate">开始思想浸润</p>
+                    </div>
+                </div>
+                
+                <div class="flex items-center space-x-1.5">
+                    <!-- 全书读书笔记 -->
+                    <button onclick="toggleNotesDrawer()" class="p-2 rounded-xl text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90" title="读书随笔">
+                        <i data-lucide="highlighter" class="w-5 h-5"></i>
+                    </button>
+                    <!-- 朗读播音 -->
+                    <button onclick="toggleTtsControlPanel()" class="p-2 rounded-xl text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90" title="AI听书">
+                        <i data-lucide="headphones" class="w-5 h-5"></i>
+                    </button>
+                    <!-- 精细排版 -->
+                    <button onclick="toggleConfigPanel()" class="p-2 rounded-xl text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90" title="排版微调">
+                        <i data-lucide="sliders" class="w-5 h-5"></i>
+                    </button>
+                    <!-- 精确目录 -->
+                    <button onclick="toggleCatalogPanel()" class="p-2 rounded-xl text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90" title="目录检索">
+                        <i data-lucide="list" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </header>
+
+            <!-- 阅读主窗口 (高质感自适应) -->
+            <div id="reader-viewport" class="flex-grow overflow-y-auto px-6 py-6 no-scrollbar relative select-text" onscroll="handleReaderScroll()">
+                <div id="reader-content" class="max-w-2xl mx-auto text-lg leading-relaxed space-y-6 break-all prose dark:prose-invert font-serif">
+                    <!-- 动态载入的正文内容 -->
+                </div>
+                <div id="reader-content-spacer" class="h-36"></div>
+            </div>
+
+            <!-- 阅读器底部轻态控制台 -->
+            <footer id="reader-footer" class="bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-100 dark:border-zinc-800/80 px-5 py-3 safe-pb z-10 flex flex-col space-y-3 transition-all duration-300">
+                <div class="flex items-center justify-between text-[10px] text-zinc-400 font-bold uppercase tracking-wider">
+                    <span id="reading-mode-indicator">当前状态：纵向滚动阅览</span>
+                    <span id="paged-index-indicator" class="hidden">第 1 / 1 页</span>
+                </div>
+                <!-- 精细化调控进度轨 -->
+                <div class="flex items-center space-x-3 text-xs text-zinc-500">
+                    <button onclick="navigatePage('prev')" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-lg active:scale-90 transition-transform"><i data-lucide="chevron-left" class="w-4 h-4"></i></button>
+                    <input type="range" id="reader-progress-slider" min="0" max="100" value="0" oninput="handleProgressSliderChange(this.value)" class="flex-grow h-1 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-indigo-600">
+                    <span id="reader-percent" class="font-bold min-w-[32px] text-right">0%</span>
+                    <button onclick="navigatePage('next')" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-lg active:scale-90 transition-transform"><i data-lucide="chevron-right" class="w-4 h-4"></i></button>
+                </div>
+            </footer>
+
+            <div id="selection-popover" class="fixed bg-zinc-900/95 backdrop-blur-md text-white px-3.5 py-2.5 rounded-2xl shadow-floating z-[80] flex items-center space-x-4 hidden transition-opacity duration-150 border border-white/10" onmousedown="event.preventDefault()">
+                <div class="flex items-center space-x-1.5 border-r border-zinc-700 pr-3">
+                    <button onclick="applyHighlight('yellow')" class="w-5 h-5 rounded-full bg-yellow-300 border-2 border-white/50 active:scale-90 transition-transform" title="智慧黄"></button>
+                    <button onclick="applyHighlight('green')" class="w-5 h-5 rounded-full bg-green-400 border-2 border-white/50 active:scale-90 transition-transform" title="松叶绿"></button>
+                    <button onclick="applyHighlight('pink')" class="w-5 h-5 rounded-full bg-pink-400 border-2 border-white/50 active:scale-90 transition-transform" title="珊瑚粉"></button>
+                    <button onclick="applyHighlight('blue')" class="w-5 h-5 rounded-full bg-blue-400 border-2 border-white/50 active:scale-90 transition-transform" title="天青蓝"></button>
+                    <button onclick="applyHighlight('purple')" class="w-5 h-5 rounded-full bg-purple-400 border-2 border-white/50 active:scale-90 transition-transform" title="丁香紫"></button>
+                </div>
+                <!-- 记笔记 -->
+                <button onclick="showNoteEditor()" class="flex items-center space-x-1.5 text-xs hover:text-indigo-300 font-extrabold active:scale-95 transition-transform">
+                    <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                    <span>随笔</span>
+                </button>
+                <!-- 抹去划线 -->
+                <button onclick="clearCurrentSelectionHighlight()" class="text-xs hover:text-red-400 font-extrabold active:scale-95 transition-transform flex items-center space-x-1.5">
+                    <i data-lucide="eraser" class="w-3.5 h-3.5"></i>
+                    <span>擦除</span>
+                </button>
+            </div>
+
+            <div id="mark-action-popover" class="fixed bg-zinc-900/95 backdrop-blur-md text-white px-3.5 py-2.5 rounded-2xl shadow-floating z-[80] hidden flex-col space-y-2 min-w-[168px] border border-white/10" onmousedown="event.preventDefault()">
+                <p id="mark-action-preview" class="text-[10px] text-zinc-400 line-clamp-2 italic border-l-2 border-indigo-400 pl-2 leading-relaxed"></p>
+                <div class="flex items-center space-x-3">
+                    <button onclick="removeMarkFromPopover()" class="flex items-center space-x-1.5 text-xs text-red-400 hover:text-red-300 font-extrabold active:scale-95 transition-transform">
+                        <i data-lucide="eraser" class="w-3.5 h-3.5"></i>
+                        <span>取消标记</span>
+                    </button>
+                    <button id="mark-action-edit-btn" onclick="editMarkFromPopover()" class="hidden items-center space-x-1.5 text-xs hover:text-indigo-300 font-extrabold active:scale-95 transition-transform">
+                        <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                        <span>编辑附记</span>
+                    </button>
+                </div>
+            </div>
+
+            <div id="note-modal" class="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm flex items-center justify-center p-5 z-[60] hidden" onclick="if(event.target===this) closeNoteEditor()">
+                <div class="bg-white dark:bg-zinc-900 w-full max-w-sm rounded-3xl p-6 shadow-floating flex flex-col space-y-4 border border-zinc-100 dark:border-zinc-800" onclick="event.stopPropagation()">
+                    <h5 id="note-modal-title" class="font-black text-sm text-zinc-900 dark:text-zinc-100 flex items-center">
+                        <i data-lucide="edit-3" class="w-4.5 h-4.5 mr-2 text-indigo-600"></i>思想随笔札记
+                    </h5>
+                    <p id="note-selected-text-preview" class="text-xs text-zinc-500 line-clamp-3 bg-zinc-50 dark:bg-zinc-800 p-3.5 rounded-2xl italic border-l-2 border-indigo-500"></p>
+                    <p id="note-standalone-hint" class="hidden text-[10px] text-zinc-400 font-bold">将关联到当前阅读位置（第 <span id="note-standalone-para">1</span> 段），无需选中文字</p>
+                    <textarea id="note-text-area" rows="4" class="w-full bg-zinc-50 dark:bg-zinc-800 text-xs p-3.5 rounded-2xl border border-zinc-100 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-zinc-800 dark:text-zinc-100" placeholder="在此留下您此时此刻的灵感和思考..."></textarea>
+                    <div class="flex items-center justify-end space-x-2 text-xs">
+                        <button onclick="closeNoteEditor()" class="px-4 py-2.5 rounded-xl text-zinc-500 font-bold hover:bg-zinc-100 dark:hover:bg-zinc-800">暂存</button>
+                        <button onclick="saveNote()" class="px-5 py-2.5 rounded-xl bg-indigo-600 text-white font-black hover:bg-indigo-700 active:scale-95 transition-transform shadow-md shadow-indigo-500/10">镌刻思想</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="notes-drawer-backdrop" class="absolute inset-0 bg-zinc-950/25 z-20 hidden" onclick="closeNotesDrawer()"></div>
+
+            <div id="notes-drawer" class="absolute inset-y-0 right-0 w-[85%] max-w-sm bg-white dark:bg-zinc-900 border-l border-zinc-100 dark:border-zinc-800 shadow-floating z-30 hidden flex-col transition-transform duration-300">
+                <div class="p-5 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between safe-pt">
+                    <span class="font-black text-sm text-zinc-900 dark:text-zinc-100 flex items-center">
+                        <i data-lucide="book-open" class="w-5 h-5 mr-2 text-indigo-600"></i>本书随笔与标记
+                    </span>
+                    <button onclick="toggleNotesDrawer()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <div class="px-5 py-3 border-b border-zinc-100 dark:border-zinc-800">
+                    <button onclick="showStandaloneNoteEditor()" class="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black flex items-center justify-center space-x-2 active:scale-95 transition-all shadow-sm shadow-indigo-500/20">
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                        <span>新建随笔</span>
+                    </button>
+                </div>
+                <div id="notes-drawer-list" class="flex-grow overflow-y-auto p-5 space-y-4 text-xs no-scrollbar">
+                    <!-- 动态装配随笔卡片 -->
+                </div>
+            </div>
+
+            <div id="tts-panel" class="absolute bottom-24 left-4 right-4 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-100 dark:border-zinc-800/80 rounded-3xl shadow-floating p-5 z-20 hidden transition-all duration-300 transform translate-y-2">
+                <div class="flex items-center justify-between mb-4 pb-2 border-b border-zinc-100 dark:border-zinc-800/80">
+                    <div class="flex items-center space-x-1.5 text-xs font-black text-zinc-800 dark:text-zinc-200">
+                        <i data-lucide="mic" class="w-4 h-4 text-indigo-600 animate-pulse"></i>
+                        <span>AI 深度伴读引擎 (支持锁屏)</span>
+                    </div>
+                    <button onclick="toggleTtsControlPanel()" class="p-1 bg-zinc-50 dark:bg-zinc-800 rounded-lg text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                
+                <div class="flex flex-col space-y-4">
+                    <div class="grid grid-cols-2 gap-4 text-xs">
+                        <div class="flex flex-col space-y-1.5">
+                            <span class="text-zinc-400 font-bold">听书声线选择</span>
+                            <select id="tts-voice-select" class="bg-zinc-50 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 rounded-xl p-2.5 border border-zinc-100 dark:border-zinc-700 focus:outline-none font-medium"></select>
+                        </div>
+                        <div class="flex flex-col space-y-1.5">
+                            <span class="text-zinc-400 font-bold flex justify-between">
+                                <span>朗读语速</span>
+                                <span id="tts-speed-lbl" class="font-extrabold text-indigo-600">1.0x</span>
+                            </span>
+                            <input type="range" id="tts-speed-slider" min="0.5" max="2.5" step="0.1" value="1.0" oninput="changeTtsSpeed(this.value)" class="h-1 mt-2 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-indigo-600">
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-center space-x-6 py-2">
+                        <button onclick="seekSpeech('prev')" class="p-2.5 bg-zinc-50 dark:bg-zinc-800 rounded-2xl text-zinc-600 dark:text-zinc-300 active:scale-95"><i data-lucide="skip-back" class="w-5 h-5"></i></button>
+                        <button onclick="togglePlaySpeech()" id="tts-play-btn" class="p-4 rounded-full bg-indigo-600 text-white shadow-lg active:scale-95 transform hover:scale-105 transition-all shadow-indigo-500/20"><i data-lucide="play" class="w-6 h-6 fill-white"></i></button>
+                        <button onclick="stopSpeech()" class="p-2.5 bg-red-50 dark:bg-red-950/20 rounded-2xl text-red-500 active:scale-95"><i data-lucide="square" class="w-5 h-5"></i></button>
+                        <button onclick="seekSpeech('next')" class="p-2.5 bg-zinc-50 dark:bg-zinc-800 rounded-2xl text-zinc-600 dark:text-zinc-300 active:scale-95"><i data-lucide="skip-forward" class="w-5 h-5"></i></button>
+                    </div>
+
+                    <p class="text-[9px] text-zinc-400 text-center font-bold">
+                        小提示：您可关闭手机屏幕，系统的通知控制面板仍能操纵播放。
+                    </p>
+                </div>
+            </div>
+
+            <div id="config-panel" class="absolute bottom-16 left-0 right-0 bg-white dark:bg-zinc-900 border-t border-zinc-100 dark:border-zinc-800 p-6 rounded-t-[2.5rem] shadow-floating z-20 hidden transition-all duration-300">
+                <div class="flex items-center justify-between mb-5">
+                    <h5 class="font-extrabold text-sm text-zinc-800 dark:text-zinc-100">视觉微调与视图设定</h5>
+                    <button onclick="toggleConfigPanel()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+
+                <div class="space-y-4 text-xs">
+                    <!-- 阅读视图模式切换 -->
+                    <div>
+                        <span class="text-zinc-400 font-bold block mb-2.5">翻阅形式</span>
+                        <div class="grid grid-cols-2 gap-3">
+                            <button onclick="changeReadingMode('scroll')" id="mode-scroll-btn" class="py-3 rounded-2xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1">
+                                <i data-lucide="arrow-down" class="w-4 h-4"></i>
+                                <span>纵向连贯滚动</span>
+                            </button>
+                            <button onclick="changeReadingMode('paged')" id="mode-paged-btn" class="py-3 rounded-2xl border border-zinc-200 text-zinc-500 dark:border-zinc-700 font-bold active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1">
+                                <i data-lucide="arrow-left-right" class="w-4 h-4"></i>
+                                <span>触屏物理翻页</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 丰富色彩主题 -->
+                    <div>
+                        <span class="text-zinc-400 font-bold block mb-2.5">精制阅读底色</span>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button onclick="changeReaderTheme('light')" class="py-2.5 rounded-xl border border-zinc-200 bg-white text-zinc-800 font-extrabold active:scale-95 transition-transform shadow-sm">象牙白</button>
+                            <button onclick="changeReaderTheme('sepia')" class="py-2.5 rounded-xl border border-sepia-200 bg-sepia-50 text-sepia-900 font-extrabold active:scale-95 transition-transform shadow-sm">雅致沙</button>
+                            <button onclick="changeReaderTheme('eye')" class="py-2.5 rounded-xl border border-eye-200 bg-eye-50 text-eye-900 font-extrabold active:scale-95 transition-transform shadow-sm">松针绿</button>
+                            <button onclick="changeReaderTheme('slate')" class="py-2.5 rounded-xl border border-slate-200 bg-slate-100 text-slate-800 font-extrabold active:scale-95 transition-transform shadow-sm">静谧灰</button>
+                            <button onclick="changeReaderTheme('midnight')" class="py-2.5 rounded-xl border border-zinc-800 bg-slate-900 text-zinc-200 font-extrabold active:scale-95 transition-transform shadow-sm">深邃蓝</button>
+                            <button onclick="changeReaderTheme('dark')" class="py-2.5 rounded-xl border border-zinc-950 bg-black text-zinc-200 font-extrabold active:scale-95 transition-transform shadow-sm">纯臻黑</button>
+                        </div>
+                    </div>
+
+                    <!-- 字号微调 -->
+                    <div class="flex items-center justify-between">
+                        <span class="text-zinc-400 font-bold">书籍字号</span>
+                        <div class="flex items-center space-x-4">
+                            <button onclick="changeFontSize('dec')" class="w-9 h-9 rounded-full border border-zinc-200 dark:border-zinc-700 flex items-center justify-center text-sm font-extrabold active:scale-90">-</button>
+                            <span id="font-size-lbl" class="font-black text-sm">18px</span>
+                            <button onclick="changeFontSize('inc')" class="w-9 h-9 rounded-full border border-zinc-200 dark:border-zinc-700 flex items-center justify-center text-sm font-extrabold active:scale-90">+</button>
+                        </div>
+                    </div>
+
+                    <!-- 字体切换 -->
+                    <div class="flex items-center justify-between">
+                        <span class="text-zinc-400 font-bold">思想语调字体</span>
+                        <div class="flex space-x-2">
+                            <button onclick="changeFontFamily('sans')" id="font-sans-btn" class="px-4 py-2 rounded-xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black">现代等宽</button>
+                            <button onclick="changeFontFamily('serif')" id="font-serif-btn" class="px-4 py-2 rounded-xl border border-zinc-200 dark:border-700 text-zinc-500 font-bold">经典衬线</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="catalog-panel" class="absolute inset-y-0 right-0 w-[85%] max-w-sm bg-white dark:bg-zinc-900 border-l border-zinc-100 dark:border-zinc-800 shadow-floating z-30 hidden flex-col transition-transform duration-300">
+                <div class="p-5 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between safe-pt">
+                    <span class="font-black text-sm text-zinc-900 dark:text-zinc-100 flex items-center">
+                        <i data-lucide="book-marked" class="w-5 h-5 mr-2 text-indigo-600"></i>思想目录
+                    </span>
+                    <button onclick="toggleCatalogPanel()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <div id="catalog-list" class="flex-grow overflow-y-auto p-3 space-y-1 text-xs no-scrollbar">
+                    <!-- 目录列表项 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 提示消息弹窗 -->
+        <div id="custom-toast" class="fixed top-24 left-1/2 transform -translate-x-1/2 bg-zinc-900/90 dark:bg-zinc-800/95 text-white text-xs px-5 py-3 rounded-2xl shadow-floating z-[70] transition-all duration-300 opacity-0 pointer-events-none flex items-center space-x-2">
+            <span id="toast-text">提示内容</span>
+        </div>
+    </div>
+
+    <script>
+        const KINDLE_EXTENSIONS = new Set(['mobi', 'azw', 'azw3', 'prc']);
+        const SUPPORTED_EXTENSIONS = new Set(['txt', 'pdf', 'epub', ...KINDLE_EXTENSIONS]);
+
+        function dismissSplash() {
+            const splash = document.getElementById('splash-screen');
+            splash.style.opacity = '0';
+            setTimeout(async () => {
+                splash.remove();
+                await initApp();
+            }, 1000);
+        }
+
+        function getFileExtension(filename) {
+            const parts = filename.toLowerCase().split('.');
+            return parts.length > 1 ? parts.pop() : '';
+        }
+
+        function getFileBaseName(filename) {
+            return filename.replace(/\.[^.]+$/, '');
+        }
+
+        async function ensureKindleParser() {
+            if (window.parseKindleToText) return;
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('Kindle 解析引擎加载超时')), 20000);
+                const onReady = () => {
+                    clearTimeout(timeout);
+                    resolve();
+                };
+                if (window.kindleParserReady) {
+                    onReady();
+                    return;
+                }
+                window.addEventListener('kindle-parser-ready', onReady, { once: true });
+            });
+        }
+
+        function setupDragDropImport() {
+            const shelf = document.getElementById('tab-bookshelf');
+            if (!shelf) return;
+
+            shelf.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                shelf.classList.add('ring-2', 'ring-indigo-400/40', 'ring-inset');
+            });
+            shelf.addEventListener('dragleave', () => {
+                shelf.classList.remove('ring-2', 'ring-indigo-400/40', 'ring-inset');
+            });
+            shelf.addEventListener('drop', (e) => {
+                e.preventDefault();
+                shelf.classList.remove('ring-2', 'ring-indigo-400/40', 'ring-inset');
+                const file = e.dataTransfer?.files?.[0];
+                if (file) processBookFile(file);
+            });
+        }
+
+        // 全局核心状态
+        let db = {
+            books: [],       
+            history: [],     
+            notes: {},       
+            stats: {         
+                today: 0,    
+                total: 0,    
+                weekly: [0, 0, 0, 0, 0, 0, 0], 
+                bookToday: {},
+                lastUpdated: null
+            }
+        };
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'modern-cognito-reader';
+        
+        let currentBook = null;       
+        let currentParagraphs = [];  
+        let currentParaIndex = 0;
+        let pagedLayout = [];
+        let currentPageIndex = 0;
+        let pagedLayoutCacheKey = '';
+        let cachedPagedLayoutPages = [];
+        let measureSandboxEl = null;
+        let catalogBuiltForBookId = null;
+        let readerConfigApplyTimer = null;
+        let configSaveTimer = null;
+        
+        let isReadingSessionActive = false;
+        let readingSecondsElapsed = 0;
+
+        let speechSynth = window.speechSynthesis;
+        let speechUtterance = null;
+        let speechIsPlaying = false;
+        let speechSpeed = 1.0;
+        let selectedVoice = null;
+        let ttsActiveIndex = null; 
+
+        let readerConfig = {
+            theme: 'light',
+            fontSize: 18,
+            fontFamily: 'sans',
+            mode: 'scroll' 
+        };
+
+        let currentSelection = {
+            paraIndex: null,
+            selectedText: '',
+            anchorOffset: 0,
+            focusOffset: 0
+        };
+        let selectionPopoverVisible = false;
+        let markActionPopoverVisible = false;
+        let activeMarkNoteId = null;
+        let viewportPointerDown = null;
+        let cachedSelectionRange = null;
+        let noteEditorMode = 'selection';
+        let editingNoteId = null;
+
+        const HIGHLIGHT_COLORS = {
+            yellow: 'bg-yellow-300',
+            green: 'bg-green-400',
+            pink: 'bg-pink-400',
+            blue: 'bg-blue-400',
+            purple: 'bg-purple-400'
+        };
+
+        function getNoteColorDot(color) {
+            return HIGHLIGHT_COLORS[color] || HIGHLIGHT_COLORS.yellow;
+        }
+
+        function safeCreateIcons() {
+            try {
+                if (typeof lucide === 'undefined' || typeof lucide.createIcons !== 'function') return;
+                const options = lucide.icons ? { icons: lucide.icons } : {};
+                lucide.createIcons(options);
+            } catch (err) {
+                console.warn('图标渲染跳过:', err.message);
+            }
+        }
+
+        // 内置样例经典书籍
+        const SAMPLE_BOOKS = [
+            {
+                id: 'cogito_story',
+                title: '我思故我在的宇宙冥想',
+                author: '勒内·笛卡尔',
+                coverBg: 'from-zinc-800 via-zinc-900 to-indigo-950',
+                progress: 0,
+                lastReadPara: 0,
+                dateAdded: new Date().toISOString(),
+                content: `前言 智慧的探求\n\n如果我们要探求真理，在一生中至少有一次，要对一切能够怀疑的事物抱持最彻底的怀疑。\n\n第一章 怀疑的深渊\n\n我怀疑我的感官。因为我常常在梦境中看见一切真实之物，就好像它发生在清醒时一般。谁能保证我此刻没有身处梦境之中？在这彻底的怀疑下，世界、星辰、乃至我自己的身体似乎都在虚无的边缘摇摇欲坠。\n\n第二章 绝对的根基\n\n然而，正是在这种极端、深重的怀疑中，我发现了一件无可动摇的事实：当我怀疑一切时，‘我在怀疑’这件事本身，是无法否认的。既然我在怀疑，我就在思考；既然我在思考，那我就必然作为一个思考着的实体存在着。\n\n“我思，故我在。”\n\n这是我思考哲学的阿基米德支点。一切知识的真理都将以此为绝对基础重新建立起来。\n\n第三章 无限的延伸\n\n在确立了思考的主体之后，意识的触角开始向无限延伸。我们开始审视完美的概念、宇宙的秩序、以及规律本身的永恒性。思考不只是闭目冥想，而是一次对星空、对真理的浩瀚探寻过程。`
+            },
+            {
+                id: 'mindful_growth',
+                title: '自我认知的极简哲学',
+                author: '苏格拉底',
+                coverBg: 'from-amber-800 via-amber-950 to-orange-950',
+                progress: 0,
+                lastReadPara: 0,
+                dateAdded: new Date().toISOString(),
+                content: `第一章 认识你自己\n\n未经过审视的人生是不值得度过的。真正的大智慧，并非知晓天地万物的所有知识，而是深切体悟到“我知道我一无所知”。\n\n只有先承认自己的盲区，理性的追求才算真正启航。\n\n第二章 精神助产术\n\n我并不是将真理直接塞进你的脑中。我的探寻过程就像是一个助产师：通过一个接一个的灵魂追问，帮助你剥离虚假的前提，使真实的智慧在你内心自然而然地诞生出来。`
+            }
+        ];
+
+        function getBookCoverGradient(book) {
+            let hash = 0;
+            for (let i = 0; i < book.title.length; i++) {
+                hash = book.title.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const hue1 = Math.abs(hash % 360);
+            return `linear-gradient(135deg, hsl(${hue1}, 40%, 20%) 0%, hsl(${hue1}, 20%, 35%) 100%)`;
+        }
+
+        function generateBookCoverThumbHTML(book) {
+            const gradient = getBookCoverGradient(book);
+            const author = escapeHtml(book.author || '未知作者');
+            const title = escapeHtml(book.title || '未命名');
+            const progress = Math.round(book.progress || 0);
+
+            return `
+                <div class="w-12 h-[4.25rem] rounded-r-lg flex-shrink-0 relative overflow-hidden shadow-book flex border-l-[3px] border-white/25" style="background: ${gradient}">
+                    <div class="w-1.5 bg-white/10 shrink-0 flex flex-col justify-between py-1">
+                        <div class="w-full h-px bg-white/10"></div>
+                        <div class="w-full h-px bg-white/10"></div>
+                    </div>
+                    <div class="flex-grow flex flex-col justify-between p-1.5 relative overflow-hidden min-w-0">
+                        <span class="text-[5px] text-white/55 font-bold truncate leading-none">${author}</span>
+                        <span class="text-[7px] text-white/95 font-black text-center leading-tight line-clamp-3 px-0.5 drop-shadow-sm">${title}</span>
+                        <div class="h-0.5 bg-white/15 rounded-full overflow-hidden">
+                            <div class="bg-indigo-400/90 h-full" style="width: ${progress}%"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function generateBookCoverHTML(book) {
+            const styleGradient = getBookCoverGradient(book);
+            
+            // 升级：实体书视觉重构 (添加厚度、阴影与页边视觉)
+            return `
+                <div class="group relative w-full aspect-[2/3] perspective-1000 cursor-pointer transform transition-all duration-300 hover:-translate-y-2">
+                    <!-- Book Shadow -->
+                    <div class="absolute inset-0 bg-black/20 rounded-r-lg blur-lg transform translate-x-2 group-hover:translate-x-4 transition-transform opacity-0 group-hover:opacity-100"></div>
+
+                    <!-- Book Content -->
+                    <div class="relative w-full h-full bg-white rounded-r-lg border-l-4 border-zinc-100 shadow-[0_5px_15px_rgba(0,0,0,0.1)] overflow-hidden flex transition-all duration-500 group-hover:shadow-[0_15px_30px_rgba(0,0,0,0.2)]">
+                        
+                        <!-- Page Edge Simulation -->
+                        <div class="w-2.5 bg-zinc-50 border-r border-zinc-200/50 flex flex-col justify-between py-2">
+                             <div class="w-full h-1 bg-zinc-200/50"></div>
+                             <div class="w-full h-1 bg-zinc-200/50"></div>
+                        </div>
+
+                        <!-- Cover Content -->
+                        <div class="flex-grow flex flex-col justify-between p-4 relative overflow-hidden" style="background: ${styleGradient}">
+                            <div class="absolute inset-0 opacity-[0.03]" style="background-image: url('data:image/svg+xml,%3Csvg width=20 height=20 viewBox=%220 0 20 20%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cg fill=%22%23ffffff%22 fill-opacity=%221%22 fill-rule=%22evenodd%22%3E%3Ccircle cx=%223%22 cy=%223%22 r=%221%22/%3E%3Ccircle cx=%2213%22 cy=%2213%22 r=%221%22/%3E%3C/g%3E%3C/svg%3E');"></div>
+                            
+                            <div class="flex flex-col space-y-1">
+                                <span class="text-[7px] text-white/60 font-bold uppercase tracking-widest truncate">${book.author}</span>
+                            </div>
+
+                            <div class="px-1 text-center">
+                                <h4 class="font-serif font-black text-[11px] leading-tight text-white/90 drop-shadow-md">
+                                    ${book.title}
+                                </h4>
+                            </div>
+
+                            <div class="h-1 bg-white/10 w-full rounded-full overflow-hidden mt-1">
+                                <div class="bg-indigo-400/80 h-full transition-all duration-500" style="width: ${Math.round(book.progress || 0)}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function initApp() {
+            const { hadSavedData, migratedFromLegacy } = await loadFromLocalStorage();
+
+            if (db.books.length === 0 && !hadSavedData) {
+                db.books = [...SAMPLE_BOOKS];
+                await saveToLocalStorage();
+            } else if (migratedFromLegacy) {
+                showToast(`已从本地恢复 ${db.books.length} 本图书`);
+            }
+
+            safeCreateIcons();
+            renderBookshelf();
+            renderStats();
+            renderHistory();
+            initTtsVoices();
+            checkDailyStatsReset();
+            setInterval(trackReadingTime, 1000);
+            setupDragDropImport();
+            setupSelectionListeners();
+            document.addEventListener('visibilitychange', handleReadingVisibilityChange);
+        }
+
+        // 核心导航控制切换 Tab 板块函数
+        function switchTab(tabId) {
+            // 隐藏所有主内容板块
+            document.getElementById('tab-bookshelf').classList.add('hidden');
+            document.getElementById('tab-stats').classList.add('hidden');
+            document.getElementById('tab-history').classList.add('hidden');
+
+            // 重置所有导航图标与文字高亮
+            const tabs = ['bookshelf', 'stats', 'history'];
+            tabs.forEach(t => {
+                const btn = document.getElementById(`nav-${t}`);
+                if (btn) {
+                    btn.classList.remove('text-indigo-600');
+                    btn.classList.add('text-zinc-400');
+                }
+            });
+
+            // 显示被选中的板块
+            const activeTab = document.getElementById(`tab-${tabId}`);
+            if (activeTab) {
+                activeTab.classList.remove('hidden');
+            }
+
+            // 激活当前导航栏高亮颜色
+            const activeBtn = document.getElementById(`nav-${tabId}`);
+            if (activeBtn) {
+                activeBtn.classList.remove('text-zinc-400');
+                activeBtn.classList.add('text-indigo-600');
+            }
+
+            // 切换时重新拉取对应板块最新的渲染数据
+            if (tabId === 'stats') {
+                renderStats();
+            } else if (tabId === 'history') {
+                renderHistory();
+            } else if (tabId === 'bookshelf') {
+                renderBookshelf();
+            }
+        }
+
+        // --- 本地持久化：IndexedDB 存书（大容量），并兼容旧版 localStorage ---
+        const LIBRARY_DB_NAME = `${appId}_library_v1`;
+        const LIBRARY_STORE = 'snapshots';
+
+        function normalizeDbShape() {
+            if (!db.books) db.books = [];
+            if (!db.history) db.history = [];
+            if (!db.notes) db.notes = {};
+            if (!db.stats) db.stats = { today: 0, total: 0, weekly: [0, 0, 0, 0, 0, 0, 0], bookToday: {}, lastUpdated: null };
+            if (!db.stats.bookToday) db.stats.bookToday = {};
+        }
+
+        function openLibraryDB() {
+            return new Promise((resolve, reject) => {
+                if (!window.indexedDB) {
+                    reject(new Error('NO_IDB'));
+                    return;
+                }
+                const request = indexedDB.open(LIBRARY_DB_NAME, 1);
+                request.onupgradeneeded = (event) => {
+                    event.target.result.createObjectStore(LIBRARY_STORE);
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        function readLibrarySnapshot() {
+            return openLibraryDB().then(idb => new Promise((resolve, reject) => {
+                const tx = idb.transaction(LIBRARY_STORE, 'readonly');
+                const req = tx.objectStore(LIBRARY_STORE).get('main');
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            }));
+        }
+
+        function writeLibrarySnapshot(snapshot) {
+            return openLibraryDB().then(idb => new Promise((resolve, reject) => {
+                const tx = idb.transaction(LIBRARY_STORE, 'readwrite');
+                tx.objectStore(LIBRARY_STORE).put(snapshot, 'main');
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            }));
+        }
+
+        function loadLegacyLocalStorageDb() {
+            const keys = [`${appId}_db_v3`, `${appId}_db_v2`, `${appId}_db`];
+            for (const key of keys) {
+                const saved = localStorage.getItem(key);
+                if (!saved) continue;
+                try {
+                    const parsed = JSON.parse(saved);
+                    if (parsed && Array.isArray(parsed.books) && parsed.books.length > 0) {
+                        return parsed;
+                    }
+                } catch (e) {
+                    console.warn(`读取旧版书架数据失败: ${key}`, e);
+                }
+            }
+            return null;
+        }
+
+        function saveLegacyLocalStorageDb() {
+            localStorage.setItem(`${appId}_db_v3`, JSON.stringify(db));
+            localStorage.setItem(`${appId}_reader_config`, JSON.stringify(readerConfig));
+            localStorage.setItem(`${appId}_storage_ready`, String(Date.now()));
+        }
+
+        async function loadFromLocalStorage() {
+            let hadSavedData = false;
+            let migratedFromLegacy = false;
+            let idbSnapshot = null;
+
+            try {
+                idbSnapshot = await readLibrarySnapshot();
+                if (idbSnapshot?.db) {
+                    db = idbSnapshot.db;
+                    normalizeDbShape();
+                    hadSavedData = true;
+                }
+                if (idbSnapshot?.readerConfig) {
+                    readerConfig = { ...readerConfig, ...idbSnapshot.readerConfig };
+                }
+            } catch (e) {
+                console.warn('IndexedDB 加载失败，尝试 localStorage', e);
+            }
+
+            if (!db.books.length) {
+                const legacyDb = loadLegacyLocalStorageDb();
+                if (legacyDb) {
+                    db = legacyDb;
+                    normalizeDbShape();
+                    hadSavedData = true;
+                    migratedFromLegacy = true;
+                    await persistLibraryData();
+                }
+            }
+
+            const savedConfig = localStorage.getItem(`${appId}_reader_config`);
+            if (savedConfig) {
+                try {
+                    readerConfig = { ...readerConfig, ...JSON.parse(savedConfig) };
+                } catch (e) {
+                    console.warn('阅读器配置加载失败，使用默认值');
+                }
+            }
+
+            if (db.books.length > 0 || db.history.length > 0 || Object.keys(db.notes).length > 0) {
+                hadSavedData = true;
+            }
+
+            return { hadSavedData, migratedFromLegacy };
+        }
+
+        async function persistLibraryData() {
+            const snapshot = {
+                db,
+                readerConfig,
+                version: 1,
+                savedAt: Date.now()
+            };
+
+            try {
+                await writeLibrarySnapshot(snapshot);
+            } catch (e) {
+                console.error('IndexedDB 保存失败，回退 localStorage', e);
+                try {
+                    saveLegacyLocalStorageDb();
+                } catch (err) {
+                    if (err?.name === 'QuotaExceededError') {
+                        throw new Error('QUOTA_EXCEEDED');
+                    }
+                    throw err;
+                }
+                return;
+            }
+
+            try {
+                saveLegacyLocalStorageDb();
+            } catch (e) {
+                if (e?.name === 'QuotaExceededError') {
+                    // 正文已在 IndexedDB，localStorage 仅作索引备份，失败可忽略
+                    localStorage.setItem(`${appId}_storage_ready`, String(Date.now()));
+                } else {
+                    throw e;
+                }
+            }
+        }
+
+        async function saveToLocalStorage() {
+            try {
+                await persistLibraryData();
+            } catch (e) {
+                console.error('书架保存失败', e);
+                showToast(e?.message === 'QUOTA_EXCEEDED'
+                    ? '保存失败：存储空间不足，请删除部分书籍后重试'
+                    : '书架保存失败，请刷新后重试');
+                throw e;
+            }
+        }
+
+        function showToast(text) {
+            const toast = document.getElementById('custom-toast');
+            if (toast) {
+                document.getElementById('toast-text').innerText = text;
+                toast.style.opacity = '1';
+                toast.style.pointerEvents = 'auto';
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    toast.style.pointerEvents = 'none';
+                }, 2500);
+            }
+        }
+
+        async function handleBookImport(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            await processBookFile(file);
+            event.target.value = '';
+        }
+
+        async function processBookFile(file) {
+            const ext = getFileExtension(file.name);
+            const baseName = getFileBaseName(file.name);
+
+            if (ext === 'kfx') {
+                showToast('KFX 格式暂不支持，请用 Calibre 转为 EPUB 或 MOBI');
+                return;
+            }
+
+            if (!SUPPORTED_EXTENSIONS.has(ext)) {
+                showToast('支持 EPUB / PDF / TXT / MOBI / AZW / AZW3 / PRC');
+                return;
+            }
+
+            showToast(`正在汲取真理：${file.name}...`);
+
+            try {
+                if (ext === 'txt') {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        addBookToShelf(baseName, '自主思索', e.target.result);
+                    };
+                    reader.readAsText(file, 'UTF-8');
+                } else if (ext === 'pdf') {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const typedarray = new Uint8Array(e.target.result);
+                        pdfjsLib.getDocument(typedarray).promise.then(pdf => {
+                            let totalPages = pdf.numPages;
+                            let extractedText = '';
+                            let count = 0;
+                            showToast(`正在提取 PDF 文字通道 (${totalPages}页)...`);
+
+                            for (let i = 1; i <= totalPages; i++) {
+                                pdf.getPage(i).then(page => {
+                                    page.getTextContent().then(textContent => {
+                                        const pageText = textContent.items.map(item => item.str).join(' ');
+                                        extractedText += `\n\n第 ${page.pageNumber} 页\n\n` + pageText;
+                                        count++;
+                                        if (count === totalPages) {
+                                            addBookToShelf(baseName, 'PDF 文献', extractedText);
+                                        }
+                                    });
+                                });
+                            }
+                        }).catch(err => {
+                            console.error(err);
+                            showToast('PDF 提取失败，请检查文件格式');
+                        });
+                    };
+                    reader.readAsArrayBuffer(file);
+                } else if (ext === 'epub') {
+                    const epubText = await parseEpubToText(file);
+                    addBookToShelf(baseName, 'EPUB 经典', epubText);
+                } else if (KINDLE_EXTENSIONS.has(ext)) {
+                    showToast('正在解析 Kindle / MOBI 电子书...');
+                    await ensureKindleParser();
+                    const { title, author, text } = await window.parseKindleToText(file);
+                    if (!text) {
+                        showToast('未能从该 Kindle 文件中提取正文');
+                        return;
+                    }
+                    addBookToShelf(title || baseName, author, text);
+                }
+            } catch (err) {
+                console.error(err);
+                if (err?.message === 'KINDLE_UNSUPPORTED') {
+                    showToast('无法识别该 Kindle 文件，可能含 DRM 或为 KFX 格式');
+                } else {
+                    showToast('文件提取失败，请检查格式或重试（DRM 加密书籍不支持）');
+                }
+            }
+        }
+
+        async function parseEpubToText(file) {
+            const zip = await JSZip.loadAsync(file);
+            const parser = new DOMParser();
+
+            const containerXml = await zip.file("META-INF/container.xml").async("text");
+            const containerDoc = parser.parseFromString(containerXml, "text/xml");
+            const opfPath = containerDoc.querySelector("rootfile").getAttribute("full-path");
+            const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
+
+            const opfXml = await zip.file(opfPath).async("text");
+            const opfDoc = parser.parseFromString(opfXml, "text/xml");
+
+            const manifest = {};
+            const items = opfDoc.querySelectorAll("manifest > item");
+            items.forEach(item => {
+                manifest[item.getAttribute("id")] = item.getAttribute("href");
+            });
+
+            const spine = [];
+            const spineItems = opfDoc.querySelectorAll("spine > itemref");
+            spineItems.forEach(itemref => {
+                spine.push(itemref.getAttribute("idref"));
+            });
+
+            let fullText = "";
+            showToast("正在铺平 EPUB 章节，生成无缝思考流...");
+
+            for (let idref of spine) {
+                const relativeHref = manifest[idref];
+                if (!relativeHref) continue;
+
+                const href = decodeURIComponent(opfDir + relativeHref);
+                const chapterFile = zip.file(href);
+                if (!chapterFile) continue;
+
+                const htmlText = await chapterFile.async("text");
+                const htmlDoc = parser.parseFromString(htmlText, "text/html");
+
+                const elements = htmlDoc.querySelectorAll("h1, h2, h3, h4, p");
+                elements.forEach(el => {
+                    let txt = el.textContent.trim();
+                    if (txt.length > 0) {
+                        if (el.tagName.startsWith('H')) {
+                            fullText += `\n\n第[章节] ${txt}\n\n`;
+                        } else {
+                            fullText += `${txt}\n\n`;
+                        }
+                    }
+                });
+            }
+            return fullText;
+        }
+
+        async function addBookToShelf(title, author, content) {
+            const newBook = {
+                id: 'book_' + Date.now(),
+                title: title,
+                author: author || '思考者',
+                coverBg: '', // 依靠动态Cover生成
+                progress: 0,
+                lastReadPara: 0,
+                dateAdded: new Date().toISOString(),
+                content: content
+            };
+
+            db.books.unshift(newBook);
+            try {
+                await saveToLocalStorage();
+                renderBookshelf();
+                showToast(`《${title}》已收入私人馆藏书库，并已保存到本机！`);
+            } catch (e) {
+                db.books = db.books.filter(b => b.id !== newBook.id);
+                renderBookshelf();
+            }
+        }
+
+        function confirmDeleteBook(bookId, e) {
+            e.stopPropagation();
+            const book = db.books.find(b => b.id === bookId);
+            if (!book) return;
+            if (confirm(`确定将《${book.title}》移出书架吗？`)) {
+                deleteBook(bookId, e);
+            }
+        }
+
+        function deleteBook(bookId, e) {
+            if (e) e.stopPropagation();
+            if (currentBook && currentBook.id === bookId) {
+                stopSpeech();
+                stopReadingTimer();
+                document.getElementById('reader-view').classList.add('hidden');
+                currentBook = null;
+            }
+            db.books = db.books.filter(b => b.id !== bookId);
+            db.history = db.history.filter(h => h.bookId !== bookId);
+            if (db.notes[bookId]) delete db.notes[bookId];
+            saveToLocalStorage();
+            renderBookshelf();
+            renderHistory();
+            showToast("书籍已安全移出私人书房");
+        }
+
+        function renderBookshelf() {
+            const grid = document.getElementById('bookshelf-grid');
+            const countLabel = document.getElementById('book-count');
+            grid.innerHTML = '';
+            countLabel.innerText = `(${db.books.length})`;
+
+            db.books.forEach(book => {
+                const item = document.createElement('div');
+                item.className = "flex flex-col space-y-2 relative group";
+                item.onclick = () => openReader(book);
+
+                const coverHTML = generateBookCoverHTML(book);
+                item.innerHTML = `
+                    <button onclick="confirmDeleteBook('${book.id}', event)"
+                        class="absolute -top-1.5 -right-1.5 z-20 w-7 h-7 rounded-full bg-zinc-900/80 text-white flex items-center justify-center opacity-80 sm:opacity-0 sm:group-hover:opacity-100 active:scale-90 transition-all shadow-md hover:bg-red-600"
+                        title="移出书架">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    </button>
+                    ${coverHTML}
+                `;
+                
+                grid.appendChild(item);
+            });
+
+            updateRecentCard();
+            updateShelfDailyProgress();
+            safeCreateIcons();
+        }
+
+        function updateRecentCard() {
+            const card = document.getElementById('recent-read-card');
+            if (db.history.length > 0) {
+                const latestHistory = db.history[0];
+                const book = db.books.find(b => b.id === latestHistory.bookId);
+                if (book) {
+                    card.classList.remove('hidden');
+                    document.getElementById('recent-title').innerText = book.title;
+                    document.getElementById('recent-info').innerText = `已阅至第 ${latestHistory.paraIndex + 1} 段 · 思考度 ${Math.round(book.progress || 0)}%`;
+                    document.getElementById('recent-progress-bar').style.width = `${book.progress || 0}%`;
+                    return;
+                }
+            }
+            card.classList.add('hidden');
+        }
+
+        function openRecentBook() {
+            if (db.history.length > 0) {
+                const book = db.books.find(b => b.id === db.history[0].bookId);
+                if (book) openReader(book);
+            }
+        }
+
+        function renderHistory() {
+            const list = document.getElementById('history-list');
+            list.innerHTML = '';
+
+            if (db.history.length === 0) {
+                list.innerHTML = `
+                    <div class="text-center py-16 text-zinc-400 text-sm">
+                        <i data-lucide="compass" class="w-10 h-10 mx-auto mb-2 opacity-50 text-indigo-500"></i>
+                        暂无阅读思考足迹
+                    </div>
+                `;
+                safeCreateIcons();
+                return;
+            }
+
+            db.history.forEach(item => {
+                const book = db.books.find(b => b.id === item.bookId);
+                if (!book) return;
+
+                const row = document.createElement('div');
+                row.className = "bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800/80 py-5 px-5 rounded-3xl flex items-center justify-between gap-4 cursor-pointer active:scale-[0.99] transition-transform shadow-premium";
+                row.onclick = () => openReader(book, item.paraIndex);
+
+                const readTime = new Date(item.timestamp).toLocaleString();
+
+                row.innerHTML = `
+                    <div class="flex items-center space-x-4 min-w-0 flex-1">
+                        ${generateBookCoverThumbHTML(book)}
+                        <div class="overflow-hidden min-w-0 flex-1 space-y-1.5 py-0.5">
+                            <h4 class="font-extrabold text-sm text-zinc-800 dark:text-zinc-100 truncate leading-snug">${escapeHtml(book.title)}</h4>
+                            <p class="text-[11px] text-zinc-400 font-bold leading-relaxed">读至第 ${item.paraIndex + 1} 段 · 进度 ${Math.round(book.progress || 0)}%</p>
+                            <span class="text-[10px] text-zinc-400/90 font-medium block leading-relaxed">${readTime}</span>
+                        </div>
+                    </div>
+                    <button class="text-xs font-black text-indigo-600 dark:text-indigo-400 flex items-center space-x-0.5 shrink-0 pl-2">
+                        <span>续读</span> <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+                    </button>
+                `;
+                list.appendChild(row);
+            });
+            safeCreateIcons();
+        }
+
+        function openReader(book, startParaIndex = null) {
+            currentBook = book;
+            invalidatePagedLayoutCache();
+            catalogBuiltForBookId = null;
+            
+            currentParagraphs = book.content.split('\n')
+                .map(p => p.trim())
+                .filter(p => p.length > 0);
+
+            if (startParaIndex !== null) {
+                currentParaIndex = startParaIndex;
+            } else if (book.lastReadPara) {
+                currentParaIndex = book.lastReadPara;
+            } else {
+                currentParaIndex = 0;
+            }
+
+            document.getElementById('reader-book-title').innerText = book.title;
+            document.getElementById('reader-view').classList.remove('hidden');
+            document.getElementById('catalog-panel').classList.add('hidden');
+            document.getElementById('config-panel').classList.add('hidden');
+            document.getElementById('tts-panel').classList.add('hidden');
+            closeNotesDrawer();
+
+            applyReaderConfig(true);
+            hideSelectionPopover();
+            hideMarkActionPopover();
+            cachedSelectionRange = null;
+            window.getSelection()?.removeAllRanges();
+
+            startReadingTimer();
+            addToHistory(book.id, currentParaIndex);
+
+            setupSwipeGestures();
+            setupPagedResizeListener();
+            updateMediaSession();
+        }
+
+        function closeReader() {
+            if (currentBook) {
+                currentBook.lastReadPara = currentParaIndex;
+                const progress = (currentParaIndex / Math.max(1, currentParagraphs.length - 1)) * 100;
+                currentBook.progress = Math.min(100, Math.max(0, progress));
+                saveToLocalStorage();
+            }
+
+            stopSpeech();
+            stopReadingTimer();
+            document.getElementById('reader-view').classList.add('hidden');
+            document.getElementById('catalog-panel').classList.add('hidden');
+            document.getElementById('config-panel').classList.add('hidden');
+            document.getElementById('tts-panel').classList.add('hidden');
+            closeNotesDrawer();
+            renderBookshelf();
+        }
+
+        function isChapterPara(para) {
+            return para.startsWith('第[章节]') || (para.startsWith('第') && (para.includes('章') || para.includes('节')));
+        }
+
+        function getReaderFontFamily() {
+            return readerConfig.fontFamily === 'serif'
+                ? 'Georgia, STKaiti, KaiTi, serif'
+                : 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+        }
+
+        function applyParagraphTypography(el, isChapter) {
+            el.style.fontFamily = getReaderFontFamily();
+            if (isChapter) {
+                el.style.fontSize = `${Math.round(readerConfig.fontSize * 1.4)}px`;
+                el.style.lineHeight = '1.4';
+            } else {
+                el.style.fontSize = `${readerConfig.fontSize}px`;
+                el.style.lineHeight = '1.75';
+            }
+        }
+
+        function applyPagedSandboxStyles(el, width, height) {
+            el.style.cssText = `position:fixed;left:-99999px;top:0;width:${width}px;height:${height}px;overflow:hidden;box-sizing:border-box;visibility:hidden;pointer-events:none;`;
+            el.style.fontSize = `${readerConfig.fontSize}px`;
+            el.style.fontFamily = getReaderFontFamily();
+            el.style.lineHeight = '1.75';
+        }
+
+        function highlightParaTextRange(paraStr, paraIdx, notesList, start, end) {
+            const slice = paraStr.substring(start, end);
+            const paraNotes = notesList
+                .filter(n => n.paraIndex === paraIdx && n.range[1] > start && n.range[0] < end)
+                .map(n => ({
+                    ...n,
+                    range: [
+                        Math.max(0, n.range[0] - start),
+                        Math.min(end - start, n.range[1] - start)
+                    ]
+                }))
+                .filter(n => n.range[1] > n.range[0]);
+            return highlightParaText(slice, paraIdx, paraNotes);
+        }
+
+        function createPagedParagraphEl(para, idx, bookNotes, isChapter, htmlOverride) {
+            const p = document.createElement('p');
+            p.setAttribute('data-para-idx', idx);
+            applyParagraphTypography(p, isChapter);
+            if (isChapter) {
+                p.className = "font-black text-zinc-900 dark:text-white mb-2 border-l-4 border-indigo-600 pl-4 select-text shrink-0";
+                p.innerText = para.replace('[章节]', '').trim();
+            } else {
+                p.className = "text-justify cursor-pointer py-1 select-text shrink-0";
+                p.innerHTML = htmlOverride || highlightParaText(para, idx, bookNotes);
+            }
+            return p;
+        }
+
+        function adjustTextBreakPoint(para, start, end) {
+            if (end >= para.length) return end;
+            const slice = para.substring(start, end);
+            const breakTokens = ['\n\n', '\n', '。', '！', '？', '；', '，', '. ', '! ', '? ', ', '];
+            for (const token of breakTokens) {
+                const pos = slice.lastIndexOf(token);
+                if (pos > slice.length * 0.45) {
+                    return start + pos + token.length;
+                }
+            }
+            return end;
+        }
+
+        function getMeasureSandbox(pageWidth, pageHeight) {
+            if (!measureSandboxEl) {
+                measureSandboxEl = document.createElement('div');
+                measureSandboxEl.className = 'paged-page flex flex-col justify-start gap-4 py-8 px-4';
+                document.body.appendChild(measureSandboxEl);
+            }
+            applyPagedSandboxStyles(measureSandboxEl, pageWidth, pageHeight);
+            return measureSandboxEl;
+        }
+
+        function getPagedLayoutCacheKey(bookId, bookNotes) {
+            const viewport = document.getElementById('reader-viewport');
+            const notesSig = (bookNotes || []).length + '|' + (bookNotes || []).map(n => `${n.id}:${n.range?.[0]}:${n.range?.[1]}`).join(';');
+            return [
+                bookId,
+                currentParagraphs.length,
+                readerConfig.fontSize,
+                readerConfig.fontFamily,
+                viewport?.clientWidth || 0,
+                viewport?.clientHeight || 0,
+                notesSig
+            ].join('::');
+        }
+
+        function invalidatePagedLayoutCache() {
+            pagedLayoutCacheKey = '';
+            cachedPagedLayoutPages = [];
+        }
+
+        function chunkFitsOnEmptyPage(para, idx, bookNotes, sandbox, start, end) {
+            const html = highlightParaTextRange(para, idx, bookNotes, start, end);
+            const el = createPagedParagraphEl(para.substring(start, end), idx, bookNotes, false, html);
+            sandbox.replaceChildren(el);
+            return sandbox.scrollHeight <= sandbox.clientHeight + 2;
+        }
+
+        function paginateParagraphChunkElements(para, idx, bookNotes, sandbox) {
+            const elements = [];
+            let start = 0;
+            const remainingTotal = para.length;
+            const step = Math.max(96, Math.min(480, Math.floor(remainingTotal / 6) || 96));
+
+            while (start < para.length) {
+                const remain = para.length - start;
+                let end = start + Math.min(step, remain);
+
+                if (!chunkFitsOnEmptyPage(para, idx, bookNotes, sandbox, start, end)) {
+                    let lo = 1;
+                    let hi = end - start;
+                    let best = 1;
+                    while (lo <= hi) {
+                        const mid = Math.floor((lo + hi) / 2);
+                        let tryEnd = adjustTextBreakPoint(para, start, start + mid);
+                        if (tryEnd <= start) tryEnd = start + mid;
+                        if (chunkFitsOnEmptyPage(para, idx, bookNotes, sandbox, start, tryEnd)) {
+                            best = tryEnd - start;
+                            lo = mid + 1;
+                        } else {
+                            hi = mid - 1;
+                        }
+                    }
+                    end = start + best;
+                } else while (end < para.length) {
+                    const nextEnd = adjustTextBreakPoint(para, start, Math.min(para.length, end + step));
+                    if (nextEnd <= end || !chunkFitsOnEmptyPage(para, idx, bookNotes, sandbox, start, nextEnd)) break;
+                    end = nextEnd;
+                }
+
+                end = adjustTextBreakPoint(para, start, end);
+                if (end <= start) end = Math.min(start + 1, para.length);
+
+                const html = highlightParaTextRange(para, idx, bookNotes, start, end);
+                elements.push(createPagedParagraphEl(para.substring(start, end), idx, bookNotes, false, html));
+                start = end;
+            }
+
+            return elements;
+        }
+
+        function buildPagedLayout(bookNotes) {
+            const viewport = document.getElementById('reader-viewport');
+            const pageWidth = viewport.clientWidth;
+            const pageHeight = viewport.clientHeight;
+            if (pageWidth <= 0 || pageHeight <= 0) return [];
+
+            const cacheKey = getPagedLayoutCacheKey(currentBook?.id, bookNotes);
+            if (cacheKey === pagedLayoutCacheKey && cachedPagedLayoutPages.length) {
+                return cachedPagedLayoutPages;
+            }
+
+            const sandbox = getMeasureSandbox(pageWidth, pageHeight);
+            const pages = [];
+            let pageBlocks = [];
+
+            function canFit(blocks) {
+                sandbox.replaceChildren(...blocks.map(block => block.el.cloneNode(true)));
+                return sandbox.scrollHeight <= sandbox.clientHeight + 2;
+            }
+
+            function tryAppend(block) {
+                return canFit([...pageBlocks, block]);
+            }
+
+            function pushPage() {
+                if (pageBlocks.length) {
+                    pages.push({ blocks: pageBlocks });
+                    pageBlocks = [];
+                }
+            }
+
+            for (let idx = 0; idx < currentParagraphs.length; idx++) {
+                const para = currentParagraphs[idx];
+                const isChapter = isChapterPara(para);
+
+                if (isChapter) {
+                    const block = { paraIdx: idx, el: createPagedParagraphEl(para, idx, bookNotes, true), isChapter: true };
+                    if (!tryAppend(block)) pushPage();
+                    if (!canFit([block])) {
+                        pageBlocks = [block];
+                        pushPage();
+                    } else {
+                        pageBlocks.push(block);
+                    }
+                    continue;
+                }
+
+                const fullBlock = { paraIdx: idx, el: createPagedParagraphEl(para, idx, bookNotes, false), isChapter: false };
+                if (tryAppend(fullBlock)) {
+                    pageBlocks.push(fullBlock);
+                    continue;
+                }
+
+                pushPage();
+                if (canFit([fullBlock])) {
+                    pageBlocks.push(fullBlock);
+                    continue;
+                }
+
+                const chunks = paginateParagraphChunkElements(para, idx, bookNotes, sandbox);
+                for (const chunkEl of chunks) {
+                    const chunkBlock = { paraIdx: idx, el: chunkEl, isChapter: false };
+                    if (!tryAppend(chunkBlock)) pushPage();
+                    pageBlocks.push(chunkBlock);
+                }
+            }
+
+            pushPage();
+            pagedLayoutCacheKey = cacheKey;
+            cachedPagedLayoutPages = pages;
+            return pages;
+        }
+
+        function getPageIndexForParagraph(paraIdx) {
+            for (let i = 0; i < pagedLayout.length; i++) {
+                if (pagedLayout[i].blocks.some(block => block.paraIdx === paraIdx)) return i;
+            }
+            return 0;
+        }
+
+        function updatePagedIndicator() {
+            const el = document.getElementById('paged-index-indicator');
+            if (el) {
+                const total = Math.max(1, pagedLayout.length);
+                el.innerText = `第 ${currentPageIndex + 1} / ${total} 页`;
+            }
+        }
+
+        function restorePagedPosition() {
+            if (readerConfig.mode !== 'paged' || !pagedLayout.length) return;
+            currentPageIndex = getPageIndexForParagraph(currentParaIndex);
+            scrollToPageIndex(currentPageIndex, 'auto');
+        }
+
+        function renderReaderContent() {
+            const container = document.getElementById('reader-content');
+            container.innerHTML = '';
+
+            if (currentParagraphs.length === 0) {
+                container.innerHTML = `<p class="text-zinc-400 text-center font-bold">该著作无文字内容</p>`;
+                pagedLayout = [];
+                return;
+            }
+
+            const bookNotes = db.notes[currentBook.id] || [];
+
+            const viewport = document.getElementById('reader-viewport');
+            const content = document.getElementById('reader-content');
+
+            if (readerConfig.mode === 'scroll') {
+                pagedLayout = [];
+                document.getElementById('reader-content-spacer').classList.remove('hidden');
+                viewport.classList.remove('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
+                viewport.classList.add('overflow-y-auto');
+                content.className = "max-w-2xl mx-auto leading-relaxed space-y-6 break-all font-serif";
+                document.getElementById('paged-index-indicator').classList.add('hidden');
+
+                currentParagraphs.forEach((para, idx) => {
+                    const p = document.createElement('p');
+                    p.id = `para-${idx}`;
+                    p.className = "text-justify cursor-pointer hover:bg-zinc-100/40 dark:hover:bg-zinc-800/10 px-2 py-1 rounded-xl transition-all duration-200 select-text";
+                    p.setAttribute('data-para-idx', idx);
+                    const isChapter = isChapterPara(para);
+                    applyParagraphTypography(p, isChapter);
+
+                    if (isChapter) {
+                        p.className += " font-black text-zinc-900 dark:text-white mt-8 mb-4 border-l-4 border-indigo-600 pl-3.5";
+                        p.innerText = para.replace('[章节]', '').trim();
+                    } else {
+                        p.innerHTML = highlightParaText(para, idx, bookNotes);
+                    }
+                    container.appendChild(p);
+                });
+            } else {
+                document.getElementById('reader-content-spacer').classList.add('hidden');
+                viewport.classList.remove('overflow-y-auto');
+                viewport.classList.add('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
+                content.className = "leading-relaxed break-all font-serif";
+                document.getElementById('paged-index-indicator').classList.remove('hidden');
+
+                pagedLayout = buildPagedLayout(bookNotes);
+                if (pagedLayout.length === 0) {
+                    requestAnimationFrame(() => renderReaderContent());
+                    return;
+                }
+
+                pagedLayout.forEach((page, pageIdx) => {
+                    const pageDiv = document.createElement('div');
+                    pageDiv.id = `page-${pageIdx}`;
+                    pageDiv.className = "paged-page flex flex-col justify-start gap-4 py-8 px-4";
+                    page.blocks.forEach(block => {
+                        pageDiv.appendChild(block.el.cloneNode(true));
+                    });
+                    container.appendChild(pageDiv);
+                });
+
+                currentPageIndex = getPageIndexForParagraph(currentParaIndex);
+                syncPagedPageWidths();
+                updatePagedIndicator();
+            }
+
+            updateSliderProgress();
+            if (catalogBuiltForBookId !== currentBook?.id) {
+                buildCatalog();
+                catalogBuiltForBookId = currentBook?.id;
+            }
+        }
+
+        function syncPagedPageWidths() {
+            if (readerConfig.mode !== 'paged') return;
+
+            const viewport = document.getElementById('reader-viewport');
+            if (!viewport) return;
+
+            const pageWidth = viewport.clientWidth;
+            if (pageWidth <= 0) {
+                requestAnimationFrame(syncPagedPageWidths);
+                return;
+            }
+
+            const pages = document.querySelectorAll('#reader-content .paged-page');
+            pages.forEach(page => {
+                page.style.flex = `0 0 ${pageWidth}px`;
+                page.style.width = `${pageWidth}px`;
+                page.style.minWidth = `${pageWidth}px`;
+                page.style.maxWidth = `${pageWidth}px`;
+            });
+        }
+
+        // 核心同步与渲染更新逻辑
+        function updateSliderProgress() {
+            if (!currentParagraphs || currentParagraphs.length === 0) return;
+            const pct = Math.round((currentParaIndex / Math.max(1, currentParagraphs.length - 1)) * 100);
+            
+            const percentEl = document.getElementById('reader-percent');
+            if (percentEl) {
+                percentEl.innerText = `${pct}%`;
+            }
+            
+            const sliderEl = document.getElementById('reader-progress-slider');
+            if (sliderEl) {
+                sliderEl.value = pct;
+            }
+
+            // 联动更新目录显示中的章节名
+            let latestChapter = '正文';
+            for (let i = currentParaIndex; i >= 0; i--) {
+                const text = currentParagraphs[i];
+                if (text && (text.startsWith('第[章节]') || (text.startsWith('第') && (text.includes('章') || text.includes('节'))))) {
+                    latestChapter = text.replace('[章节]', '').trim();
+                    break;
+                }
+            }
+            
+            const chapterTitleEl = document.getElementById('reader-chapter-title');
+            if (chapterTitleEl) {
+                chapterTitleEl.innerText = latestChapter;
+            }
+        }
+
+        function escapeHtml(str) {
+            return str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function highlightParaText(paraStr, paraIdx, notesList) {
+            const paraNotes = notesList.filter(n => n.paraIndex === paraIdx);
+            if (paraNotes.length === 0) return escapeHtml(paraStr);
+
+            paraNotes.sort((a, b) => a.range[0] - b.range[0]);
+
+            let resultHtml = "";
+            let lastIdx = 0;
+
+            paraNotes.forEach(note => {
+                let start = note.range[0];
+                let end = note.range[1];
+                const noteText = note.text || paraStr.substring(start, end);
+
+                if (paraStr.substring(start, end) !== noteText) {
+                    const found = findTextInParagraph(paraStr, noteText, start);
+                    if (found !== null) {
+                        start = found;
+                        end = found + noteText.length;
+                    }
+                }
+
+                if (end <= start || !noteText) return;
+
+                if (start >= lastIdx && end <= paraStr.length && end > start) {
+                    resultHtml += escapeHtml(paraStr.substring(lastIdx, start));
+                    const markClass = `mark-${note.color || 'yellow'}`;
+                    const noteAttr = note.note ? ` title="读书随笔: ${escapeHtml(note.note)}"` : '';
+                    resultHtml += `<span class="${markClass} cursor-pointer" data-note-id="${note.id}"${noteAttr}>${escapeHtml(paraStr.substring(start, end))}</span>`;
+                    lastIdx = end;
+                }
+            });
+
+            resultHtml += escapeHtml(paraStr.substring(lastIdx));
+            return resultHtml;
+        }
+
+        function findTextInParagraph(plainText, fragment, hint = 0) {
+            if (!fragment || !plainText) return null;
+
+            const matches = [];
+            let pos = 0;
+            while (pos <= plainText.length) {
+                const idx = plainText.indexOf(fragment, pos);
+                if (idx === -1) break;
+                matches.push(idx);
+                pos = idx + 1;
+            }
+
+            if (matches.length === 0) return null;
+            if (matches.length === 1) return matches[0];
+
+            return matches.reduce((best, idx) =>
+                Math.abs(idx - hint) < Math.abs(best - hint) ? idx : best
+            );
+        }
+
+        function normalizeNoteRange(plainText, anchorOffset, focusOffset, selectedText) {
+            if (selectedText) {
+                const hint = Math.min(anchorOffset, focusOffset);
+                const found = findTextInParagraph(plainText, selectedText, hint);
+                if (found !== null) {
+                    return [found, found + selectedText.length];
+                }
+            }
+
+            let start = Math.min(anchorOffset, focusOffset);
+            let end = Math.max(anchorOffset, focusOffset);
+            start = Math.max(0, Math.min(start, plainText.length));
+            end = Math.max(start, Math.min(end, plainText.length));
+            return [start, end];
+        }
+
+        function findParagraphElement(range) {
+            const node = range.commonAncestorContainer;
+            if (node.nodeType === Node.TEXT_NODE) {
+                return node.parentElement?.closest('p[data-para-idx]') ?? null;
+            }
+            if (node.nodeType === Node.ELEMENT_NODE && node.matches?.('p[data-para-idx]')) {
+                return node;
+            }
+            return node.closest?.('p[data-para-idx]') ?? null;
+        }
+
+        function resolveParagraphSelection(paragraphEl, range) {
+            const paraIdx = parseInt(paragraphEl.getAttribute('data-para-idx'), 10);
+            const selectedText = range.toString();
+            if (!selectedText) return null;
+
+            const paraText = currentParagraphs[paraIdx] ?? '';
+            const domText = paragraphEl.textContent ?? '';
+            const hint = getDomPointOffset(paragraphEl, range.startContainer, range.startOffset);
+
+            let start = findTextInParagraph(paraText, selectedText, hint);
+            if (start === null && domText && domText !== paraText) {
+                const domStart = findTextInParagraph(domText, selectedText, hint);
+                if (domStart !== null && domText.length === paraText.length) {
+                    start = domStart;
+                }
+            }
+
+            if (start !== null) {
+                return {
+                    paraIndex: paraIdx,
+                    selectedText,
+                    anchorOffset: start,
+                    focusOffset: start + selectedText.length
+                };
+            }
+
+            const endHint = getDomPointOffset(paragraphEl, range.endContainer, range.endOffset);
+            const safeStart = Math.max(0, Math.min(hint, endHint, paraText.length));
+            const safeEnd = Math.max(safeStart, Math.min(Math.max(hint, endHint), paraText.length));
+            const fallbackText = paraText.substring(safeStart, safeEnd) || selectedText;
+
+            return {
+                paraIndex: paraIdx,
+                selectedText: fallbackText,
+                anchorOffset: safeStart,
+                focusOffset: safeStart + fallbackText.length
+            };
+        }
+
+        function getDomPointOffset(rootEl, container, offset) {
+            if (!container) return 0;
+
+            if (container.nodeType === Node.TEXT_NODE) {
+                let counted = 0;
+                const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                    if (node === container) {
+                        return counted + offset;
+                    }
+                    counted += node.textContent.length;
+                }
+                return counted;
+            }
+
+            if (container.nodeType === Node.ELEMENT_NODE) {
+                const probe = document.createRange();
+                probe.selectNodeContents(rootEl);
+                probe.setEnd(container, offset);
+                return probe.toString().length;
+            }
+
+            return 0;
+        }
+
+        function hideSelectionPopover() {
+            selectionPopoverVisible = false;
+            const popover = document.getElementById('selection-popover');
+            if (popover) popover.classList.add('hidden');
+        }
+
+        function showSelectionPopover(range) {
+            const popover = document.getElementById('selection-popover');
+            if (!popover) return;
+
+            const rect = range.getBoundingClientRect();
+            popover.style.top = `${Math.max(60, rect.top - 55)}px`;
+            popover.style.left = `${Math.max(10, Math.min(window.innerWidth - 220, rect.left + (rect.width / 2) - 100))}px`;
+            popover.classList.remove('hidden');
+            selectionPopoverVisible = true;
+        }
+
+        function updateSelectionFromRange(sourceRange) {
+            if (!currentBook || document.getElementById('reader-view').classList.contains('hidden')) {
+                return false;
+            }
+
+            let range = sourceRange;
+            if (!range) {
+                const selection = window.getSelection();
+                if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+                    return false;
+                }
+                range = selection.getRangeAt(0);
+            }
+
+            const selectedText = range.toString();
+            if (!selectedText) return false;
+
+            const parentP = findParagraphElement(range);
+            if (!parentP) return false;
+
+            const resolved = resolveParagraphSelection(parentP, range);
+            if (!resolved || !resolved.selectedText) return false;
+
+            currentSelection = resolved;
+            cachedSelectionRange = range.cloneRange();
+            showSelectionPopover(range);
+            return true;
+        }
+
+        function refreshCurrentSelection() {
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+                return updateSelectionFromRange(selection.getRangeAt(0));
+            }
+            if (cachedSelectionRange) {
+                return updateSelectionFromRange(cachedSelectionRange);
+            }
+            return currentSelection.paraIndex !== null;
+        }
+
+        function setupSelectionListeners() {
+            const viewport = document.getElementById('reader-viewport');
+            const popover = document.getElementById('selection-popover');
+            if (!viewport || viewport.dataset.selectionBound) return;
+            viewport.dataset.selectionBound = 'true';
+
+            const handlePointerUp = () => {
+                const selection = window.getSelection();
+                if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+                    cachedSelectionRange = null;
+                    if (selectionPopoverVisible) hideSelectionPopover();
+                    return;
+                }
+
+                cachedSelectionRange = selection.getRangeAt(0).cloneRange();
+                if (!updateSelectionFromRange(cachedSelectionRange)) {
+                    cachedSelectionRange = null;
+                    hideSelectionPopover();
+                }
+            };
+
+            viewport.addEventListener('mouseup', handlePointerUp);
+            viewport.addEventListener('touchend', () => setTimeout(handlePointerUp, 10), { passive: true });
+
+            viewport.addEventListener('mousedown', (e) => {
+                viewportPointerDown = { x: e.clientX, y: e.clientY };
+            }, true);
+
+            viewport.addEventListener('click', (e) => {
+                const existingMark = e.target.closest('span[data-note-id]');
+                if (existingMark) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const noteId = existingMark.getAttribute('data-note-id');
+                    if (markActionPopoverVisible && activeMarkNoteId === noteId) {
+                        hideMarkActionPopover();
+                    } else {
+                        showMarkActionPopover(noteId, existingMark);
+                    }
+                    return;
+                }
+
+                if (readerConfig.mode !== 'paged') return;
+                if (selectionPopoverVisible || window.getSelection().toString().trim()) return;
+
+                const moved = viewportPointerDown && (
+                    Math.abs(e.clientX - viewportPointerDown.x) > 8 ||
+                    Math.abs(e.clientY - viewportPointerDown.y) > 8
+                );
+                if (moved) return;
+
+                const rect = viewport.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                if (x < rect.width * 0.3) {
+                    navigatePage('prev');
+                } else if (x > rect.width * 0.7) {
+                    navigatePage('next');
+                }
+            });
+
+            const markPopover = document.getElementById('mark-action-popover');
+
+            document.addEventListener('mousedown', (e) => {
+                if (selectionPopoverVisible && !popover.contains(e.target)) {
+                    hideSelectionPopover();
+                    window.getSelection()?.removeAllRanges();
+                    cachedSelectionRange = null;
+                }
+                if (markActionPopoverVisible && markPopover && !markPopover.contains(e.target) && !e.target.closest('span[data-note-id]')) {
+                    hideMarkActionPopover();
+                }
+            });
+        }
+
+        function applyHighlight(color) {
+            if (!refreshCurrentSelection() || currentSelection.paraIndex === null) return;
+
+            const bookId = currentBook.id;
+            if (!db.notes[bookId]) {
+                db.notes[bookId] = [];
+            }
+
+            const [start, end] = normalizeNoteRange(
+                currentParagraphs[currentSelection.paraIndex],
+                currentSelection.anchorOffset,
+                currentSelection.focusOffset,
+                currentSelection.selectedText
+            );
+
+            const newHighlight = {
+                id: 'note_' + Date.now(),
+                paraIndex: currentSelection.paraIndex,
+                range: [start, end],
+                text: currentParagraphs[currentSelection.paraIndex].substring(start, end),
+                color: color,
+                note: '',
+                timestamp: new Date().toISOString()
+            };
+
+            db.notes[bookId].push(newHighlight);
+            saveToLocalStorage();
+            
+            invalidatePagedLayoutCache();
+            renderReaderContent();
+            restorePagedPosition();
+            if (!document.getElementById('notes-drawer').classList.contains('hidden')) {
+                renderNotesDrawerList();
+            }
+            window.getSelection().removeAllRanges();
+            cachedSelectionRange = null;
+            hideSelectionPopover();
+            showToast("思想高亮已成功标注！");
+        }
+
+        function openNoteModal(mode, options = {}) {
+            noteEditorMode = mode;
+            editingNoteId = options.noteId || null;
+
+            const preview = document.getElementById('note-selected-text-preview');
+            const hint = document.getElementById('note-standalone-hint');
+            const title = document.getElementById('note-modal-title');
+            const textarea = document.getElementById('note-text-area');
+
+            if (mode === 'standalone') {
+                title.innerHTML = '<i data-lucide="plus" class="w-4.5 h-4.5 mr-2 text-indigo-600"></i>新建随笔';
+                preview.classList.add('hidden');
+                hint.classList.remove('hidden');
+                document.getElementById('note-standalone-para').innerText = currentParaIndex + 1;
+                textarea.value = '';
+            } else if (mode === 'edit') {
+                title.innerHTML = '<i data-lucide="edit-3" class="w-4.5 h-4.5 mr-2 text-indigo-600"></i>编辑随笔';
+                const note = (db.notes[currentBook.id] || []).find(n => n.id === editingNoteId);
+                if (note?.text) {
+                    preview.classList.remove('hidden');
+                    preview.innerText = `"${note.text}"`;
+                } else {
+                    preview.classList.add('hidden');
+                }
+                hint.classList.add('hidden');
+                textarea.value = note?.note || '';
+            } else {
+                title.innerHTML = '<i data-lucide="edit-3" class="w-4.5 h-4.5 mr-2 text-indigo-600"></i>划线附记';
+                preview.classList.remove('hidden');
+                preview.innerText = `"${currentSelection.selectedText}"`;
+                hint.classList.add('hidden');
+                textarea.value = '';
+            }
+
+            document.getElementById('note-modal').classList.remove('hidden');
+            safeCreateIcons();
+            setTimeout(() => textarea.focus(), 50);
+        }
+
+        function showNoteEditor() {
+            if (!refreshCurrentSelection() || currentSelection.paraIndex === null) return;
+            hideSelectionPopover();
+            openNoteModal('selection');
+        }
+
+        function showStandaloneNoteEditor() {
+            if (!currentBook) return;
+            openNoteModal('standalone');
+        }
+
+        function editNoteFromDrawer(noteId) {
+            if (!currentBook) return;
+            openNoteModal('edit', { noteId });
+        }
+
+        function closeNoteEditor() {
+            document.getElementById('note-modal').classList.add('hidden');
+            noteEditorMode = 'selection';
+            editingNoteId = null;
+        }
+
+        function saveNote() {
+            const noteText = document.getElementById('note-text-area').value.trim();
+            if (!noteText) {
+                showToast("请输入随笔内容");
+                return;
+            }
+            if (!currentBook) return;
+
+            const bookId = currentBook.id;
+            if (!db.notes[bookId]) {
+                db.notes[bookId] = [];
+            }
+
+            if (noteEditorMode === 'edit' && editingNoteId) {
+                const note = db.notes[bookId].find(n => n.id === editingNoteId);
+                if (note) {
+                    note.note = noteText;
+                    note.timestamp = new Date().toISOString();
+                    saveToLocalStorage();
+                    renderReaderContent();
+                    restorePagedPosition();
+                    closeNoteEditor();
+                    renderNotesDrawerList();
+                    showToast("随笔已更新");
+                }
+                return;
+            }
+
+            if (noteEditorMode === 'standalone') {
+                const newEssay = {
+                    id: 'note_' + Date.now(),
+                    paraIndex: currentParaIndex,
+                    range: [0, 0],
+                    text: '',
+                    color: 'purple',
+                    note: noteText,
+                    isEssay: true,
+                    timestamp: new Date().toISOString()
+                };
+                db.notes[bookId].push(newEssay);
+                saveToLocalStorage();
+                closeNoteEditor();
+                renderNotesDrawerList();
+                showToast("随笔已添加到笔记列表");
+                return;
+            }
+
+            if (!refreshCurrentSelection() || currentSelection.paraIndex === null) {
+                showToast("选区已失效，请重新选择文字");
+                return;
+            }
+
+            const [start, end] = normalizeNoteRange(
+                currentParagraphs[currentSelection.paraIndex],
+                currentSelection.anchorOffset,
+                currentSelection.focusOffset,
+                currentSelection.selectedText
+            );
+
+            const newHighlightWithNote = {
+                id: 'note_' + Date.now(),
+                paraIndex: currentSelection.paraIndex,
+                range: [start, end],
+                text: currentParagraphs[currentSelection.paraIndex].substring(start, end),
+                color: 'yellow',
+                note: noteText,
+                timestamp: new Date().toISOString()
+            };
+
+            db.notes[bookId].push(newHighlightWithNote);
+            saveToLocalStorage();
+
+            renderReaderContent();
+            restorePagedPosition();
+            closeNoteEditor();
+            window.getSelection().removeAllRanges();
+            cachedSelectionRange = null;
+            renderNotesDrawerList();
+            showToast("读书随笔已镌刻！");
+        }
+
+        function clearCurrentSelectionHighlight() {
+            if (currentSelection.paraIndex === null) return;
+            const bookId = currentBook.id;
+            const paraNotes = db.notes[bookId] || [];
+
+            db.notes[bookId] = paraNotes.filter(n => {
+                const isMatch = n.paraIndex === currentSelection.paraIndex && 
+                                n.range[0] >= currentSelection.anchorOffset && 
+                                n.range[1] <= currentSelection.focusOffset;
+                return !isMatch;
+            });
+
+            saveToLocalStorage();
+            renderReaderContent();
+            restorePagedPosition();
+            window.getSelection().removeAllRanges();
+            hideSelectionPopover();
+            showToast("已成功抹去标注");
+        }
+
+        function hideMarkActionPopover() {
+            markActionPopoverVisible = false;
+            activeMarkNoteId = null;
+            const popover = document.getElementById('mark-action-popover');
+            if (popover) popover.classList.add('hidden');
+        }
+
+        function showMarkActionPopover(noteId, targetEl) {
+            const bookId = currentBook.id;
+            const note = (db.notes[bookId] || []).find(n => n.id === noteId);
+            if (!note) return;
+
+            hideSelectionPopover();
+            window.getSelection()?.removeAllRanges();
+            cachedSelectionRange = null;
+
+            activeMarkNoteId = noteId;
+            const popover = document.getElementById('mark-action-popover');
+            const preview = document.getElementById('mark-action-preview');
+            const editBtn = document.getElementById('mark-action-edit-btn');
+
+            preview.textContent = note.note ? note.note : `"${note.text || ''}"`;
+            if (note.note) {
+                editBtn.classList.remove('hidden');
+                editBtn.classList.add('flex');
+            } else {
+                editBtn.classList.add('hidden');
+                editBtn.classList.remove('flex');
+            }
+
+            const rect = targetEl.getBoundingClientRect();
+            popover.style.top = `${Math.max(60, rect.top - 72)}px`;
+            popover.style.left = `${Math.max(10, Math.min(window.innerWidth - 190, rect.left + (rect.width / 2) - 84))}px`;
+            popover.classList.remove('hidden');
+            markActionPopoverVisible = true;
+            safeCreateIcons();
+        }
+
+        function removeMarkById(noteId, toastMessage = '标记已取消') {
+            const bookId = currentBook.id;
+            db.notes[bookId] = (db.notes[bookId] || []).filter(n => n.id !== noteId);
+            saveToLocalStorage();
+            if (!document.getElementById('notes-drawer').classList.contains('hidden')) {
+                renderNotesDrawerList();
+            }
+            renderReaderContent();
+            restorePagedPosition();
+            hideMarkActionPopover();
+            if (toastMessage) showToast(toastMessage);
+        }
+
+        function removeMarkFromPopover() {
+            if (!activeMarkNoteId) return;
+            removeMarkById(activeMarkNoteId);
+        }
+
+        function editMarkFromPopover() {
+            if (!activeMarkNoteId) return;
+            hideMarkActionPopover();
+            editNoteFromDrawer(activeMarkNoteId);
+        }
+
+        function closeNotesDrawer() {
+            document.getElementById('notes-drawer').classList.add('hidden');
+            document.getElementById('notes-drawer-backdrop').classList.add('hidden');
+        }
+
+        function openNotesDrawer() {
+            document.getElementById('config-panel').classList.add('hidden');
+            document.getElementById('tts-panel').classList.add('hidden');
+            document.getElementById('catalog-panel').classList.add('hidden');
+            document.getElementById('notes-drawer-backdrop').classList.remove('hidden');
+            document.getElementById('notes-drawer').classList.remove('hidden');
+            renderNotesDrawerList();
+        }
+
+        function toggleNotesDrawer() {
+            const drawer = document.getElementById('notes-drawer');
+            if (drawer.classList.contains('hidden')) {
+                openNotesDrawer();
+            } else {
+                closeNotesDrawer();
+            }
+        }
+
+        function renderNotesDrawerList() {
+            const list = document.getElementById('notes-drawer-list');
+            list.innerHTML = '';
+            const bookNotes = db.notes[currentBook.id] || [];
+
+            if (bookNotes.length === 0) {
+                list.innerHTML = `
+                    <div class="text-center py-12 text-zinc-400">
+                        <i data-lucide="edit" class="w-10 h-10 mx-auto mb-2 opacity-50 text-indigo-500"></i>
+                        <p class="font-bold">本书尚无随笔和划线</p>
+                        <p class="text-[10px] mt-2 text-zinc-400">点击上方「新建随笔」开始记录</p>
+                    </div>
+                `;
+                safeCreateIcons();
+                return;
+            }
+
+            const sortedNotes = [...bookNotes].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            sortedNotes.forEach(note => {
+                const card = document.createElement('div');
+                card.className = "bg-zinc-50 dark:bg-zinc-800/80 p-4 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 space-y-2";
+                
+                const time = new Date(note.timestamp).toLocaleDateString();
+                const colorDot = getNoteColorDot(note.color);
+                const isStandalone = note.isEssay || !note.text || note.range?.[0] === note.range?.[1];
+                const typeLabel = isStandalone ? '独立随笔' : '划线标注';
+
+                card.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <span class="text-[9px] text-zinc-400 font-bold uppercase tracking-wider flex items-center">
+                            <span class="w-2.5 h-2.5 rounded-full ${colorDot} mr-1.5 inline-block"></span>
+                            ${typeLabel} · 第 ${note.paraIndex + 1} 段 · ${time}
+                        </span>
+                        <div class="flex items-center space-x-2">
+                            <button onclick="editNoteFromDrawer('${note.id}')" class="text-zinc-400 hover:text-indigo-500" title="${note.note ? '编辑随笔' : '添加附记'}">
+                                <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                            </button>
+                            <button onclick="deleteSingleNote('${note.id}', event)" class="text-zinc-400 hover:text-red-500" title="删除">
+                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </div>
+                    ${!isStandalone && note.text ? `<div class="text-zinc-700 dark:text-zinc-300 font-medium italic select-text border-l-2 border-zinc-300 dark:border-zinc-600 pl-2 cursor-pointer text-[11px] leading-relaxed" onclick="jumpToParaFromNote(${note.paraIndex})">"${escapeHtml(note.text)}"</div>` : ''}
+                    ${note.note ? `<div class="bg-indigo-500/10 p-2.5 rounded-xl text-indigo-600 dark:text-indigo-400 font-bold select-text text-[11px] leading-relaxed cursor-pointer" onclick="editNoteFromDrawer('${note.id}')">📝 ${escapeHtml(note.note)}</div>` : `<div class="text-zinc-400 text-[10px] italic">仅划线，无附记</div>`}
+                `;
+                list.appendChild(card);
+            });
+            safeCreateIcons();
+        }
+
+        function deleteSingleNote(noteId, e) {
+            if (e) e.stopPropagation();
+            removeMarkById(noteId, '随笔和标注已被安全抹去');
+        }
+
+        function jumpToParaFromNote(paraIdx) {
+            currentParaIndex = paraIdx;
+            toggleNotesDrawer();
+            if (readerConfig.mode === 'scroll') {
+                scrollToParagraph(paraIdx);
+            } else {
+                scrollToPageOfParagraph(paraIdx);
+            }
+            updateSliderProgress();
+        }
+
+        // --- 触屏翻页手势机制 ---
+        let touchStartX = 0;
+        let touchEndX = 0;
+
+        function setupSwipeGestures() {
+            const viewport = document.getElementById('reader-viewport');
+            if (viewport.dataset.swipeBound) return;
+            viewport.dataset.swipeBound = 'true';
+
+            viewport.addEventListener('touchstart', (e) => {
+                touchStartX = e.changedTouches[0].screenX;
+            }, { passive: true });
+
+            viewport.addEventListener('touchend', (e) => {
+                touchEndX = e.changedTouches[0].screenX;
+                handleSwipeGesture();
+            }, { passive: true });
+        }
+
+        function handleSwipeGesture() {
+            const diffX = touchEndX - touchStartX;
+            const threshold = 55;
+
+            if (readerConfig.mode === 'paged') {
+                if (diffX < -threshold) {
+                    navigatePage('next');
+                } else if (diffX > threshold) {
+                    navigatePage('prev');
+                }
+            } else {
+                const viewport = document.getElementById('reader-viewport');
+                const pageHeight = viewport.clientHeight * 0.85;
+                if (diffX < -threshold) {
+                    viewport.scrollBy({ top: pageHeight, behavior: 'smooth' });
+                } else if (diffX > threshold) {
+                    viewport.scrollBy({ top: -pageHeight, behavior: 'smooth' });
+                }
+            }
+        }
+
+        function changeReadingMode(mode) {
+            readerConfig.mode = mode;
+            invalidatePagedLayoutCache();
+            scheduleConfigSave();
+            applyReaderConfig(true);
+        }
+
+        function scheduleConfigSave() {
+            clearTimeout(configSaveTimer);
+            configSaveTimer = setTimeout(() => {
+                saveToLocalStorage().catch(() => {});
+            }, 500);
+        }
+
+        function updateReaderConfigUi() {
+            const content = document.getElementById('reader-content');
+            const fontSizeLbl = document.getElementById('font-size-lbl');
+            if (content) {
+                content.style.fontSize = `${readerConfig.fontSize}px`;
+                content.style.fontFamily = getReaderFontFamily();
+            }
+            if (fontSizeLbl) fontSizeLbl.innerText = `${readerConfig.fontSize}px`;
+
+            const serifBtn = document.getElementById('font-serif-btn');
+            const sansBtn = document.getElementById('font-sans-btn');
+            if (readerConfig.fontFamily === 'serif') {
+                if (serifBtn) serifBtn.className = "px-4 py-2 rounded-xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black";
+                if (sansBtn) sansBtn.className = "px-4 py-2 rounded-xl border border-zinc-200 dark:border-700 text-zinc-500 font-bold";
+            } else {
+                if (sansBtn) sansBtn.className = "px-4 py-2 rounded-xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black";
+                if (serifBtn) serifBtn.className = "px-4 py-2 rounded-xl border border-zinc-200 dark:border-700 text-zinc-500 font-bold";
+            }
+            updateReadingModeButtons(readerConfig.mode);
+        }
+
+        let pagedResizeListenerBound = false;
+        let pagedResizeTimer = null;
+        let readerScrollRaf = null;
+
+        function setupPagedResizeListener() {
+            if (pagedResizeListenerBound) return;
+            pagedResizeListenerBound = true;
+            window.addEventListener('resize', () => {
+                if (!currentBook || readerConfig.mode !== 'paged') return;
+                clearTimeout(pagedResizeTimer);
+                pagedResizeTimer = setTimeout(() => {
+                    const para = currentParaIndex;
+                    invalidatePagedLayoutCache();
+                    renderReaderContent();
+                    currentParaIndex = para;
+                    restorePagedPosition();
+                }, 200);
+            });
+        }
+
+        function scrollToPageIndex(pageIdx, behavior = 'auto') {
+            if (!pagedLayout.length) return;
+
+            const viewport = document.getElementById('reader-viewport');
+            syncPagedPageWidths();
+            const pageWidth = viewport.clientWidth;
+            if (pageWidth <= 0) {
+                requestAnimationFrame(() => scrollToPageIndex(pageIdx, behavior));
+                return;
+            }
+
+            currentPageIndex = Math.max(0, Math.min(pageIdx, pagedLayout.length - 1));
+            viewport.scrollTo({ left: currentPageIndex * pageWidth, behavior: 'auto' });
+
+            const page = pagedLayout[currentPageIndex];
+            if (page?.blocks?.length) {
+                currentParaIndex = page.blocks[0].paraIdx;
+            }
+
+            updatePagedIndicator();
+            updateSliderProgress();
+            if (!speechIsPlaying) {
+                clearParagraphHighlight();
+            }
+        }
+
+        function scrollToPageOfParagraph(paraIdx, behavior = 'auto') {
+            currentParaIndex = paraIdx;
+            scrollToPageIndex(getPageIndexForParagraph(paraIdx), behavior);
+        }
+
+        function handleReaderScroll() {
+            if (readerScrollRaf) return;
+            readerScrollRaf = requestAnimationFrame(() => {
+                readerScrollRaf = null;
+                handleReaderScrollFrame();
+            });
+        }
+
+        function handleReaderScrollFrame() {
+            if (readerConfig.mode === 'scroll') {
+                const viewport = document.getElementById('reader-viewport');
+                const paras = document.getElementById('reader-content').children;
+                const middleY = viewport.clientHeight / 2;
+                let closestIdx = 0;
+                let closestDiff = Infinity;
+
+                for (let i = 0; i < paras.length; i++) {
+                    const rect = paras[i].getBoundingClientRect();
+                    const diff = Math.abs(rect.top - middleY);
+                    if (diff < closestDiff) {
+                        closestDiff = diff;
+                        closestIdx = i;
+                    }
+                }
+
+                if (closestIdx !== currentParaIndex && !speechIsPlaying) {
+                    currentParaIndex = closestIdx;
+                    updateSliderProgress();
+                }
+            } else {
+                const viewport = document.getElementById('reader-viewport');
+                const scrollLeft = viewport.scrollLeft;
+                const width = viewport.clientWidth;
+                if (width <= 0 || !pagedLayout.length) return;
+
+                const activePageIdx = Math.round(scrollLeft / width);
+                if (activePageIdx !== currentPageIndex && activePageIdx < pagedLayout.length) {
+                    currentPageIndex = activePageIdx;
+                    const page = pagedLayout[currentPageIndex];
+                    if (page?.blocks?.length && !speechIsPlaying) {
+                        currentParaIndex = page.blocks[0].paraIdx;
+                    }
+                    updateSliderProgress();
+                    updatePagedIndicator();
+                }
+            }
+        }
+
+        function navigatePage(direction) {
+            if (readerConfig.mode === 'scroll') {
+                if (direction === 'prev') {
+                    currentParaIndex = Math.max(0, currentParaIndex - 1);
+                } else {
+                    currentParaIndex = Math.min(currentParagraphs.length - 1, currentParaIndex + 1);
+                }
+                scrollToParagraph(currentParaIndex);
+            } else {
+                const nextPage = direction === 'prev'
+                    ? Math.max(0, currentPageIndex - 1)
+                    : Math.min(pagedLayout.length - 1, currentPageIndex + 1);
+                scrollToPageIndex(nextPage, 'auto');
+            }
+            updateSliderProgress();
+        }
+
+        function handleProgressSliderChange(value) {
+            const targetIdx = Math.floor((value / 100) * (currentParagraphs.length - 1));
+            currentParaIndex = targetIdx;
+            if (readerConfig.mode === 'scroll') {
+                scrollToParagraph(targetIdx);
+            } else {
+                scrollToPageOfParagraph(targetIdx);
+            }
+            updateSliderProgress();
+        }
+
+        function scrollToParagraph(idx) {
+            if (readerConfig.mode === 'paged') {
+                currentParaIndex = idx;
+                scrollToPageIndex(getPageIndexForParagraph(idx), 'auto');
+                return;
+            }
+
+            const target = document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            if (!speechIsPlaying) {
+                clearParagraphHighlight();
+            }
+        }
+
+        function clearParagraphHighlight() {
+            document.getElementById('reader-content')?.querySelectorAll('p[data-para-idx]').forEach(p => {
+                p.classList.remove('speech-highlight');
+            });
+        }
+
+        function highlightActiveParagraphInViewport(idx) {
+            const paras = document.getElementById('reader-content').querySelectorAll('p[data-para-idx]');
+            paras.forEach(p => p.classList.remove('speech-highlight'));
+
+            if (readerConfig.mode === 'paged') {
+                const pageEl = document.getElementById(`page-${currentPageIndex}`);
+                const target = pageEl?.querySelector(`[data-para-idx="${idx}"]`);
+                if (target) target.classList.add('speech-highlight');
+                return;
+            }
+
+            const target = document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
+            if (target) target.classList.add('speech-highlight');
+        }
+
+        function buildCatalog() {
+            const list = document.getElementById('catalog-list');
+            list.innerHTML = '';
+
+            let count = 0;
+            currentParagraphs.forEach((para, idx) => {
+                if (para.startsWith('第[章节]') || (para.startsWith('第') && (para.includes('章') || para.includes('节')))) {
+                    count++;
+                    const item = document.createElement('button');
+                    item.className = "w-full text-left p-3.5 rounded-2xl border-b border-zinc-50 dark:border-zinc-800/30 hover:bg-indigo-50/70 dark:hover:bg-zinc-800/50 text-zinc-700 dark:text-zinc-300 font-extrabold active:scale-[0.98] transition-all truncate";
+                    item.innerText = para.replace('[章节]', '').trim();
+                    item.onclick = () => {
+                        currentParaIndex = idx;
+                        if (readerConfig.mode === 'scroll') {
+                            scrollToParagraph(idx);
+                        } else {
+                            scrollToPageOfParagraph(idx);
+                        }
+                        updateSliderProgress();
+                        toggleCatalogPanel();
+                    };
+                    list.appendChild(item);
+                }
+            });
+
+            if (count === 0) {
+                list.innerHTML = `<div class="p-5 text-center text-zinc-400 font-bold">该著作无内部目录结构</div>`;
+            }
+        }
+
+        function applyViewportTheme(viewport) {
+            const themeClasses = ['bg-white', 'text-zinc-900', 'bg-sepia-50', 'text-sepia-950', 'bg-eye-50', 'text-eye-950', 'bg-slate-50', 'text-slate-900', 'bg-zinc-900', 'text-indigo-100', 'bg-black', 'text-zinc-200'];
+            viewport.classList.remove(...themeClasses);
+
+            if (readerConfig.theme === 'light') {
+                viewport.classList.add('bg-white', 'text-zinc-900');
+            } else if (readerConfig.theme === 'sepia') {
+                viewport.classList.add('bg-sepia-50', 'text-sepia-950');
+            } else if (readerConfig.theme === 'eye') {
+                viewport.classList.add('bg-eye-50', 'text-eye-950');
+            } else if (readerConfig.theme === 'slate') {
+                viewport.classList.add('bg-slate-50', 'text-slate-900');
+            } else if (readerConfig.theme === 'midnight') {
+                viewport.classList.add('bg-zinc-900', 'text-indigo-100');
+            } else if (readerConfig.theme === 'dark') {
+                viewport.classList.add('bg-black', 'text-zinc-200');
+            }
+        }
+
+        function updateReadingModeButtons(mode) {
+            const scrollBtn = document.getElementById('mode-scroll-btn');
+            const pagedBtn = document.getElementById('mode-paged-btn');
+            if (!scrollBtn || !pagedBtn) return;
+
+            if (mode === 'scroll') {
+                scrollBtn.className = "py-3 rounded-2xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1";
+                pagedBtn.className = "py-3 rounded-2xl border border-zinc-200 text-zinc-500 dark:border-zinc-700 font-bold active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1";
+                const indicator = document.getElementById('reading-mode-indicator');
+                if (indicator) indicator.innerText = "当前状态：纵向滚动阅览";
+            } else {
+                pagedBtn.className = "py-3 rounded-2xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1";
+                scrollBtn.className = "py-3 rounded-2xl border border-zinc-200 text-zinc-500 dark:border-zinc-700 font-bold active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1";
+                const indicator = document.getElementById('reading-mode-indicator');
+                if (indicator) indicator.innerText = "当前状态：触屏横向物理翻页";
+            }
+        }
+
+        function applyReaderConfig(immediate = false) {
+            if (!immediate) {
+                updateReaderConfigUi();
+                clearTimeout(readerConfigApplyTimer);
+                readerConfigApplyTimer = setTimeout(() => applyReaderConfig(true), 120);
+                return;
+            }
+
+            applyReaderConfigNow();
+        }
+
+        function applyReaderConfigNow() {
+            const viewport = document.getElementById('reader-viewport');
+            const content = document.getElementById('reader-content');
+            if (!viewport || !content) return;
+
+            updateReaderConfigUi();
+            renderReaderContent();
+
+            viewport.className = "flex-grow px-6 py-4 no-scrollbar relative transition-colors duration-300 select-text";
+            if (readerConfig.mode === 'paged') {
+                viewport.classList.add('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
+            } else {
+                viewport.classList.add('overflow-y-auto');
+            }
+            applyViewportTheme(viewport);
+
+            if (currentBook) {
+                if (readerConfig.mode === 'scroll') {
+                    scrollToParagraph(currentParaIndex);
+                } else {
+                    restorePagedPosition();
+                }
+            }
+        }
+
+        function changeReaderTheme(theme) {
+            readerConfig.theme = theme;
+            const viewport = document.getElementById('reader-viewport');
+            if (viewport) applyViewportTheme(viewport);
+            scheduleConfigSave();
+        }
+
+        function changeFontSize(action) {
+            if (action === 'inc') {
+                readerConfig.fontSize = Math.min(32, readerConfig.fontSize + 2);
+            } else {
+                readerConfig.fontSize = Math.max(12, readerConfig.fontSize - 2);
+            }
+            invalidatePagedLayoutCache();
+            scheduleConfigSave();
+            applyReaderConfig();
+        }
+
+        function changeFontFamily(family) {
+            readerConfig.fontFamily = family;
+            invalidatePagedLayoutCache();
+            scheduleConfigSave();
+            applyReaderConfig();
+        }
+
+        function initTtsVoices() {
+            if (!speechSynth) return;
+            const select = document.getElementById('tts-voice-select');
+            if (!select) return;
+
+            function loadVoices() {
+                const voices = speechSynth.getVoices();
+                select.innerHTML = '';
+
+                const filterVoices = voices.filter(v => v.lang.includes('zh') || v.lang.includes('en'));
+                
+                if (filterVoices.length === 0) {
+                    const opt = document.createElement('option');
+                    opt.text = "默认思索之音";
+                    opt.value = "";
+                    select.appendChild(opt);
+                    return;
+                }
+
+                filterVoices.forEach(voice => {
+                    const opt = document.createElement('option');
+                    opt.value = voice.name;
+                    opt.text = `${voice.name} (${voice.lang})`;
+                    if (voice.default || voice.name.includes('Tingting') || voice.name.includes('Google')) {
+                        opt.selected = true;
+                        selectedVoice = voice;
+                    }
+                    select.appendChild(opt);
+                });
+            }
+
+            loadVoices();
+            if (speechSynth.onvoiceschanged !== undefined) {
+                speechSynth.onvoiceschanged = loadVoices;
+            }
+
+            select.onchange = function(e) {
+                const voices = speechSynth.getVoices();
+                selectedVoice = voices.find(v => v.name === e.target.value);
+                if (speechIsPlaying) {
+                    speakParagraph(currentParaIndex);
+                }
+            };
+        }
+
+        function updateMediaSession() {
+            if ('mediaSession' in navigator && currentBook) {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: currentBook.title,
+                    artist: currentBook.author || '我思故我在',
+                    album: '私人朗读思考流',
+                    artwork: [
+                        { src: 'https://placehold.co/96x96/4f46e5/ffffff?text=EBook', sizes: '96x96', type: 'image/png' },
+                        { src: 'https://placehold.co/512x512/4f46e5/ffffff?text=EBook', sizes: '512x512', type: 'image/png' }
+                    ]
+                });
+
+                navigator.mediaSession.setActionHandler('play', () => togglePlaySpeech());
+                navigator.mediaSession.setActionHandler('pause', () => togglePlaySpeech());
+                navigator.mediaSession.setActionHandler('previoustrack', () => seekSpeech('prev'));
+                navigator.mediaSession.setActionHandler('nexttrack', () => seekSpeech('next'));
+            }
+        }
+
+        function speakParagraph(idx) {
+            if (!speechSynth) {
+                showToast("设备当前对伴读引擎不支持");
+                return;
+            }
+
+            speechSynth.cancel();
+
+            if (idx >= currentParagraphs.length) {
+                stopSpeech();
+                showToast("全书知识汲取完毕！");
+                return;
+            }
+
+            const text = currentParagraphs[idx].replace('[章节]', '').trim();
+            speechUtterance = new SpeechSynthesisUtterance(text);
+            
+            if (selectedVoice) {
+                speechUtterance.voice = selectedVoice;
+            }
+            
+            speechUtterance.rate = speechSpeed;
+
+            speechUtterance.onstart = () => {
+                speechIsPlaying = true;
+                ttsActiveIndex = idx;
+                
+                if (readerConfig.mode === 'scroll') {
+                    scrollToParagraph(idx);
+                } else {
+                    scrollToPageOfParagraph(idx);
+                }
+
+                document.getElementById('tts-play-btn').innerHTML = '<i data-lucide="pause" class="w-6 h-6 text-white fill-white"></i>';
+                safeCreateIcons();
+                highlightActiveParagraphInViewport(idx);
+
+                const silentPlayer = document.getElementById('silent-player');
+                silentPlayer.play().catch(e => console.log("静音伴音开始工作", e));
+            };
+
+            speechUtterance.onend = () => {
+                if (speechIsPlaying && idx + 1 < currentParagraphs.length) {
+                    currentParaIndex = idx + 1;
+                    updateSliderProgress();
+                    speakParagraph(currentParaIndex);
+                } else {
+                    stopSpeech();
+                }
+            };
+
+            speechUtterance.onerror = (e) => {
+                if (e.error !== 'interrupted') {
+                    stopSpeech();
+                }
+            };
+
+            speechSynth.speak(speechUtterance);
+        }
+
+        function togglePlaySpeech() {
+            const silentPlayer = document.getElementById('silent-player');
+
+            if (speechIsPlaying) {
+                speechSynth.pause();
+                speechIsPlaying = false;
+                silentPlayer.pause();
+                document.getElementById('tts-play-btn').innerHTML = '<i data-lucide="play" class="w-6 h-6 text-white fill-white"></i>';
+                safeCreateIcons();
+                showToast("伴读已暂停工作");
+                if ('mediaSession' in navigator) {
+                    navigator.mediaSession.playbackState = "paused";
+                }
+            } else {
+                silentPlayer.play().catch(() => {});
+                if (speechSynth.paused) {
+                    speechSynth.resume();
+                    speechIsPlaying = true;
+                    document.getElementById('tts-play-btn').innerHTML = '<i data-lucide="pause" class="w-6 h-6 text-white fill-white"></i>';
+                    safeCreateIcons();
+                } else {
+                    speakParagraph(currentParaIndex);
+                }
+                if ('mediaSession' in navigator) {
+                    navigator.mediaSession.playbackState = "playing";
+                }
+            }
+        }
+
+        function stopSpeech() {
+            if (speechSynth) {
+                speechSynth.cancel();
+            }
+            speechIsPlaying = false;
+            ttsActiveIndex = null;
+            document.getElementById('silent-player').pause();
+            document.getElementById('tts-play-btn').innerHTML = '<i data-lucide="play" class="w-6 h-6 text-white fill-white"></i>';
+            safeCreateIcons();
+            
+            clearParagraphHighlight();
+            if ('mediaSession' in navigator) {
+                navigator.mediaSession.playbackState = "none";
+            }
+        }
+
+        function changeTtsSpeed(val) {
+            speechSpeed = parseFloat(val);
+            document.getElementById('tts-speed-lbl').innerText = `${speechSpeed.toFixed(1)}x`;
+            if (speechIsPlaying) {
+                speakParagraph(currentParaIndex);
+            }
+        }
+
+        function seekSpeech(direction) {
+            if (direction === 'next') {
+                currentParaIndex = Math.min(currentParagraphs.length - 1, currentParaIndex + 1);
+            } else {
+                currentParaIndex = Math.max(0, currentParaIndex - 1);
+            }
+            if (readerConfig.mode === 'scroll') {
+                scrollToParagraph(currentParaIndex);
+            } else {
+                scrollToPageOfParagraph(currentParaIndex);
+            }
+            updateSliderProgress();
+            if (speechIsPlaying) {
+                speakParagraph(currentParaIndex);
+            }
+        }
+
+        function addToHistory(bookId, paraIdx) {
+            db.history = db.history.filter(h => h.bookId !== bookId);
+            db.history.unshift({
+                bookId: bookId,
+                paraIndex: paraIdx,
+                timestamp: new Date().toISOString()
+            });
+
+            if (db.history.length > 20) {
+                db.history.pop();
+            }
+            saveToLocalStorage();
+        }
+
+        function isReaderOpen() {
+            const readerView = document.getElementById('reader-view');
+            return !!(currentBook && readerView && !readerView.classList.contains('hidden'));
+        }
+
+        function startReadingTimer() {
+            if (!currentBook) return;
+            isReadingSessionActive = true;
+            readingSecondsElapsed = 0;
+        }
+
+        function stopReadingTimer() {
+            isReadingSessionActive = false;
+            readingSecondsElapsed = 0;
+        }
+
+        function handleReadingVisibilityChange() {
+            if (document.visibilityState === 'visible' && isReaderOpen()) {
+                isReadingSessionActive = true;
+            }
+        }
+
+        function recordReadingMinute(bookId) {
+            checkDailyStatsReset();
+
+            const book = db.books.find(b => b.id === bookId);
+            if (!book) return;
+
+            book.readingMinutes = (book.readingMinutes || 0) + 1;
+            db.stats.today += 1;
+            db.stats.total += 1;
+            db.stats.weekly[getDayOfWeekIndex()] += 1;
+            db.stats.bookToday[bookId] = (db.stats.bookToday[bookId] || 0) + 1;
+
+            saveToLocalStorage();
+            updateShelfDailyProgress();
+        }
+
+        // 仅统计阅读器打开且页面可见时的时长
+        function trackReadingTime() {
+            if (!isReadingSessionActive || !isReaderOpen()) {
+                if (!isReaderOpen()) stopReadingTimer();
+                return;
+            }
+            if (document.visibilityState !== 'visible') return;
+
+            readingSecondsElapsed++;
+            if (readingSecondsElapsed >= 60) {
+                readingSecondsElapsed = 0;
+                recordReadingMinute(currentBook.id);
+            }
+        }
+
+        function getDayOfWeekIndex() {
+            let day = new Date().getDay(); 
+            day = day - 1;
+            if (day < 0) day = 6;
+            return day;
+        }
+
+        function checkDailyStatsReset() {
+            const todayStr = new Date().toDateString();
+            if (db.stats.lastUpdated !== todayStr) {
+                db.stats.today = 0;
+                db.stats.bookToday = {};
+                db.stats.lastUpdated = todayStr;
+                
+                if (new Date().getDay() === 1) {
+                    db.stats.weekly = [0, 0, 0, 0, 0, 0, 0];
+                }
+                saveToLocalStorage();
+                updateShelfDailyProgress();
+            }
+        }
+
+        function updateShelfDailyProgress() {
+            const el = document.getElementById('shelf-daily-progress');
+            if (el) {
+                el.innerText = `已阅读 ${db.stats.today} / 30 分钟`;
+            }
+        }
+
+        function clearReadingStats() {
+            db.stats = {
+                today: 0,
+                total: 0,
+                weekly: [0, 0, 0, 0, 0, 0, 0],
+                bookToday: {},
+                lastUpdated: new Date().toDateString()
+            };
+            saveToLocalStorage();
+            renderStats();
+            updateShelfDailyProgress();
+            showToast("心流和思考印记清空完成");
+        }
+
+        function renderStats() {
+            document.getElementById('stat-today-minutes').innerText = db.stats.today;
+            updateShelfDailyProgress();
+            document.getElementById('stat-total-books').innerText = db.books.length;
+            document.getElementById('stat-history-reads').innerText = db.history.length;
+            document.getElementById('stat-total-minutes').innerText = db.stats.total;
+
+            const targetMinutes = 30;
+            const pct = Math.min(100, Math.round((db.stats.today / targetMinutes) * 100));
+            document.getElementById('stat-achievement').innerText = `${pct}%`;
+
+            const dashArray = 477; 
+            const offset = dashArray - (pct / 100) * dashArray;
+            document.getElementById('stat-progress-circle').setAttribute('stroke-dashoffset', offset);
+
+            drawWeeklyChart();
+        }
+
+        function drawWeeklyChart() {
+            const svg = document.getElementById('weekly-chart');
+            svg.innerHTML = '';
+
+            const weeklyData = db.stats.weekly;
+            const maxVal = Math.max(10, ...weeklyData); 
+
+            const paddingLeft = 30;
+            const paddingTop = 20;
+            const chartWidth = 300;
+            const chartHeight = 110;
+
+            for (let i = 0; i <= 4; i++) {
+                const y = paddingTop + (chartHeight / 4) * i;
+                const gridLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                gridLine.setAttribute("x1", paddingLeft);
+                gridLine.setAttribute("y1", y);
+                gridLine.setAttribute("x2", paddingLeft + chartWidth);
+                gridLine.setAttribute("y2", y);
+                gridLine.setAttribute("stroke", "#e2e8f0");
+                gridLine.setAttribute("stroke-width", "1");
+                gridLine.setAttribute("stroke-dasharray", "4,4");
+                svg.appendChild(gridLine);
+
+                const val = Math.round(maxVal - (maxVal / 4) * i);
+                const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                text.setAttribute("x", paddingLeft - 8);
+                text.setAttribute("y", y + 4);
+                text.setAttribute("font-size", "8px");
+                text.setAttribute("fill", "#94a3b8");
+                text.setAttribute("text-anchor", "end");
+                text.textContent = val;
+                svg.appendChild(text);
+            }
+
+            let points = "";
+            const stepX = chartWidth / 6;
+
+            weeklyData.forEach((val, idx) => {
+                const x = paddingLeft + idx * stepX;
+                const y = paddingTop + chartHeight - (val / maxVal) * chartHeight;
+                points += `${x},${y} `;
+
+                const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                circle.setAttribute("cx", x);
+                circle.setAttribute("cy", y);
+                circle.setAttribute("r", "4");
+                circle.setAttribute("fill", "#4f46e5");
+                circle.setAttribute("stroke", "#ffffff");
+                circle.setAttribute("stroke-width", "1.5");
+                svg.appendChild(circle);
+
+                if (val > 0) {
+                    const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                    txt.setAttribute("x", x);
+                    txt.setAttribute("y", y - 8);
+                    txt.setAttribute("font-size", "8px");
+                    txt.setAttribute("font-weight", "bold");
+                    txt.setAttribute("fill", "#4f46e5");
+                    txt.setAttribute("text-anchor", "middle");
+                    txt.textContent = `${val}m`;
+                    svg.appendChild(txt);
+                }
+            });
+
+            const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+            polyline.setAttribute("fill", "none");
+            polyline.setAttribute("stroke", "#4f46e5");
+            polyline.setAttribute("stroke-width", "3");
+            polyline.setAttribute("stroke-linecap", "round");
+            polyline.setAttribute("stroke-linejoin", "round");
+            polyline.setAttribute("points", points.trim());
+            svg.insertBefore(polyline, svg.firstChild);
+        }
+
+        function toggleDarkMode() {
+            const isDark = document.documentElement.classList.toggle('dark');
+            const themeIcon = document.getElementById('theme-icon');
+            if (isDark) {
+                themeIcon.setAttribute('data-lucide', 'sun');
+            } else {
+                themeIcon.setAttribute('data-lucide', 'moon');
+            }
+            safeCreateIcons();
+            showToast(isDark ? "极地护眼暗黑模式已开启" : "日光莹白模式已恢复");
+        }
+        
+        function toggleTtsControlPanel() {
+            const panel = document.getElementById('tts-panel');
+            panel.classList.toggle('hidden');
+            document.getElementById('config-panel').classList.add('hidden');
+            document.getElementById('catalog-panel').classList.add('hidden');
+            closeNotesDrawer();
+        }
+
+        function toggleConfigPanel() {
+            const panel = document.getElementById('config-panel');
+            panel.classList.toggle('hidden');
+            document.getElementById('tts-panel').classList.add('hidden');
+            document.getElementById('catalog-panel').classList.add('hidden');
+            closeNotesDrawer();
+        }
+
+        function toggleCatalogPanel() {
+            const panel = document.getElementById('catalog-panel');
+            panel.classList.toggle('hidden');
+            document.getElementById('config-panel').classList.add('hidden');
+            document.getElementById('tts-panel').classList.add('hidden');
+            closeNotesDrawer();
+        }
+    </script>
+</body>
+</html>
