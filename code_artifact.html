@@ -280,20 +280,26 @@
         <p class="absolute bottom-10 text-[10px] text-zinc-600 font-bold tracking-widest uppercase">Cogito, ergo sum</p>
     </div>
 
+    <input type="file" id="file-input" accept=".txt,.pdf,.epub,.mobi,.azw,.azw3,.prc" class="hidden" onchange="handleBookImport(event)">
+
     <div id="app" class="flex flex-col h-full min-h-0 w-full relative">
 
-        <header class="ui-no-select bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-100 dark:border-zinc-800/80 px-5 py-4 flex items-center justify-between safe-pt shrink-0 z-10 transition-colors duration-300">
-            <div class="flex items-center space-x-4">
+        <header class="ui-no-select bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-100 dark:border-zinc-800/80 px-3 sm:px-5 py-3 sm:py-4 flex items-center justify-between gap-2 safe-pt shrink-0 z-10 transition-colors duration-300">
+            <div class="flex items-center space-x-2 sm:space-x-4 min-w-0">
                 <div class="relative shrink-0">
-                    <img id="app-logo-nav" src="/icons/icon-transparent.png?v=11" alt="" decoding="sync" class="h-10 w-10 block" />
+                    <img id="app-logo-nav" src="/icons/icon-transparent.png?v=11" alt="" decoding="sync" class="h-9 w-9 sm:h-10 sm:w-10 block" />
                 </div>
-                <div class="flex flex-col">
-                    <span class="font-black text-base tracking-wider bg-gradient-to-r from-zinc-900 via-indigo-950 to-purple-900 dark:from-white dark:via-zinc-100 dark:to-zinc-300 bg-clip-text text-transparent">我思故我在</span>
-                    <span class="text-[9px] uppercase tracking-widest text-zinc-400 dark:text-zinc-500 font-bold">Cogito, ergo sum</span>
+                <div class="flex flex-col min-w-0">
+                    <span class="font-black text-sm sm:text-base tracking-wider truncate bg-gradient-to-r from-zinc-900 via-indigo-950 to-purple-900 dark:from-white dark:via-zinc-100 dark:to-zinc-300 bg-clip-text text-transparent">我思故我在</span>
+                    <span class="hidden sm:block text-[9px] uppercase tracking-widest text-zinc-400 dark:text-zinc-500 font-bold">Cogito, ergo sum</span>
                 </div>
             </div>
             
-            <div class="flex items-center space-x-3">
+            <div class="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
+                <button type="button" onclick="triggerBookImport()" class="bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white px-3 sm:px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all active:scale-95 duration-200">
+                    <i data-lucide="folder-open" class="w-4 h-4"></i>
+                    <span>导入</span>
+                </button>
                 <button onclick="openNotesExportPicker()" class="text-zinc-500 dark:text-zinc-400 p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90 transition-all duration-200" title="导出笔记">
                     <i data-lucide="file-down" class="w-4.5 h-4.5"></i>
                 </button>
@@ -344,11 +350,24 @@
                     </button>
                 </div>
 
+                <!-- 导入书籍主入口 -->
+                <button type="button" onclick="triggerBookImport()" class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white p-4 sm:p-5 rounded-3xl shadow-premium flex items-center justify-between active:scale-[0.99] transition-all">
+                    <div class="flex items-center space-x-3 text-left">
+                        <div class="bg-white/15 p-3 rounded-2xl">
+                            <i data-lucide="folder-open" class="w-6 h-6"></i>
+                        </div>
+                        <div>
+                            <div class="font-black text-base">导入书籍</div>
+                            <div class="text-[11px] text-indigo-100 font-bold mt-0.5">EPUB · PDF · TXT · MOBI · 支持拖拽到本页</div>
+                        </div>
+                    </div>
+                    <i data-lucide="plus" class="w-6 h-6 opacity-80 shrink-0"></i>
+                </button>
+
                 <!-- 我的书架 -->
                 <div class="pb-10">
                     <h3 class="font-black text-zinc-900 dark:text-zinc-100 text-base mb-4 flex items-center justify-between">
                         <span>我的馆藏书库 <span id="book-count" class="text-xs font-bold text-zinc-400"> (0)</span></span>
-                        <span class="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold">划线、随笔与阅读进度自动保存在本地</span>
                     </h3>
 
                     <div id="library-recovery-banner" class="hidden mb-4 p-4 rounded-2xl border border-amber-200/80 dark:border-amber-900/40 bg-amber-50/80 dark:bg-amber-950/20 text-xs text-amber-900 dark:text-amber-200">
@@ -728,6 +747,9 @@
     </div>
 
     <script>
+        const KINDLE_EXTENSIONS = new Set(['mobi', 'azw', 'azw3', 'prc']);
+        const SUPPORTED_EXTENSIONS = new Set(['txt', 'pdf', 'epub', ...KINDLE_EXTENSIONS]);
+
         function dismissSplash() {
             const splash = document.getElementById('splash-screen');
             splash.style.opacity = '0';
@@ -735,6 +757,50 @@
                 splash.remove();
                 await initApp();
             }, 1000);
+        }
+
+        function getFileExtension(filename) {
+            const parts = filename.toLowerCase().split('.');
+            return parts.length > 1 ? parts.pop() : '';
+        }
+
+        function getFileBaseName(filename) {
+            return filename.replace(/\.[^.]+$/, '');
+        }
+
+        async function ensureKindleParser() {
+            if (window.parseKindleToText) return;
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('Kindle 解析引擎加载超时')), 20000);
+                const onReady = () => {
+                    clearTimeout(timeout);
+                    resolve();
+                };
+                if (window.kindleParserReady) {
+                    onReady();
+                    return;
+                }
+                window.addEventListener('kindle-parser-ready', onReady, { once: true });
+            });
+        }
+
+        function setupDragDropImport() {
+            const shelf = document.getElementById('tab-bookshelf');
+            if (!shelf) return;
+
+            shelf.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                shelf.classList.add('ring-2', 'ring-indigo-400/40', 'ring-inset');
+            });
+            shelf.addEventListener('dragleave', () => {
+                shelf.classList.remove('ring-2', 'ring-indigo-400/40', 'ring-inset');
+            });
+            shelf.addEventListener('drop', (e) => {
+                e.preventDefault();
+                shelf.classList.remove('ring-2', 'ring-indigo-400/40', 'ring-inset');
+                const file = e.dataTransfer?.files?.[0];
+                if (file) processBookFile(file);
+            });
         }
 
         // 全局核心状态
@@ -955,6 +1021,7 @@
             initTtsVoices();
             checkDailyStatsReset();
             setInterval(trackReadingTime, 1000);
+            setupDragDropImport();
             setupSelectionListeners();
             setupReaderOverlayScrollGuard();
             document.addEventListener('visibilitychange', handleReadingVisibilityChange);
@@ -1474,6 +1541,168 @@
                     toast.style.opacity = '0';
                     toast.style.pointerEvents = 'none';
                 }, 2500);
+            }
+        }
+
+        function triggerBookImport() {
+            document.getElementById('file-input')?.click();
+        }
+
+        async function handleBookImport(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            await processBookFile(file);
+            event.target.value = '';
+        }
+
+        async function processBookFile(file) {
+            const ext = getFileExtension(file.name);
+            const baseName = getFileBaseName(file.name);
+
+            if (ext === 'kfx') {
+                showToast('KFX 格式暂不支持，请用 Calibre 转为 EPUB 或 MOBI');
+                return;
+            }
+
+            if (!SUPPORTED_EXTENSIONS.has(ext)) {
+                showToast('支持 EPUB / PDF / TXT / MOBI / AZW / AZW3 / PRC');
+                return;
+            }
+
+            showToast(`正在导入：${file.name}...`);
+
+            try {
+                if (ext === 'txt') {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        addBookToShelf(baseName, '自主思索', e.target.result);
+                    };
+                    reader.readAsText(file, 'UTF-8');
+                } else if (ext === 'pdf') {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const typedarray = new Uint8Array(e.target.result);
+                        pdfjsLib.getDocument(typedarray).promise.then(pdf => {
+                            let totalPages = pdf.numPages;
+                            let extractedText = '';
+                            let count = 0;
+                            showToast(`正在提取 PDF 文字 (${totalPages} 页)...`);
+
+                            for (let i = 1; i <= totalPages; i++) {
+                                pdf.getPage(i).then(page => {
+                                    page.getTextContent().then(textContent => {
+                                        const pageText = textContent.items.map(item => item.str).join(' ');
+                                        extractedText += `\n\n第 ${page.pageNumber} 页\n\n` + pageText;
+                                        count++;
+                                        if (count === totalPages) {
+                                            addBookToShelf(baseName, 'PDF 文献', extractedText);
+                                        }
+                                    });
+                                });
+                            }
+                        }).catch(err => {
+                            console.error(err);
+                            showToast('PDF 提取失败，请检查文件格式');
+                        });
+                    };
+                    reader.readAsArrayBuffer(file);
+                } else if (ext === 'epub') {
+                    const epubText = await parseEpubToText(file);
+                    addBookToShelf(baseName, 'EPUB 经典', epubText);
+                } else if (KINDLE_EXTENSIONS.has(ext)) {
+                    showToast('正在解析 Kindle / MOBI 电子书...');
+                    await ensureKindleParser();
+                    const { title, author, text } = await window.parseKindleToText(file);
+                    if (!text) {
+                        showToast('未能从该 Kindle 文件中提取正文');
+                        return;
+                    }
+                    addBookToShelf(title || baseName, author, text);
+                }
+            } catch (err) {
+                console.error(err);
+                if (err?.message === 'KINDLE_UNSUPPORTED') {
+                    showToast('无法识别该 Kindle 文件，可能含 DRM 或为 KFX 格式');
+                } else {
+                    showToast('文件提取失败，请检查格式或重试（DRM 加密书籍不支持）');
+                }
+            }
+        }
+
+        async function parseEpubToText(file) {
+            const zip = await JSZip.loadAsync(file);
+            const parser = new DOMParser();
+
+            const containerXml = await zip.file("META-INF/container.xml").async("text");
+            const containerDoc = parser.parseFromString(containerXml, "text/xml");
+            const opfPath = containerDoc.querySelector("rootfile").getAttribute("full-path");
+            const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
+
+            const opfXml = await zip.file(opfPath).async("text");
+            const opfDoc = parser.parseFromString(opfXml, "text/xml");
+
+            const manifest = {};
+            const items = opfDoc.querySelectorAll("manifest > item");
+            items.forEach(item => {
+                manifest[item.getAttribute("id")] = item.getAttribute("href");
+            });
+
+            const spine = [];
+            const spineItems = opfDoc.querySelectorAll("spine > itemref");
+            spineItems.forEach(itemref => {
+                spine.push(itemref.getAttribute("idref"));
+            });
+
+            let fullText = "";
+            showToast("正在解析 EPUB 章节...");
+
+            for (let idref of spine) {
+                const relativeHref = manifest[idref];
+                if (!relativeHref) continue;
+
+                const href = decodeURIComponent(opfDir + relativeHref);
+                const chapterFile = zip.file(href);
+                if (!chapterFile) continue;
+
+                const htmlText = await chapterFile.async("text");
+                const htmlDoc = parser.parseFromString(htmlText, "text/html");
+
+                const elements = htmlDoc.querySelectorAll("h1, h2, h3, h4, p");
+                elements.forEach(el => {
+                    let txt = el.textContent.trim();
+                    if (txt.length > 0) {
+                        if (el.tagName.startsWith('H')) {
+                            fullText += `\n\n第[章节] ${txt}\n\n`;
+                        } else {
+                            fullText += `${txt}\n\n`;
+                        }
+                    }
+                });
+            }
+            return fullText;
+        }
+
+        async function addBookToShelf(title, author, content) {
+            const newBook = {
+                id: 'book_' + Date.now(),
+                title: title,
+                author: author || '思考者',
+                coverBg: '',
+                progress: 0,
+                lastReadPara: 0,
+                dateAdded: new Date().toISOString(),
+                content: content
+            };
+
+            db.books.unshift(newBook);
+            try {
+                await saveToLocalStorage();
+                renderBookshelf();
+                showToast(`《${title}》已加入书架`);
+            } catch (e) {
+                db.books = db.books.filter(b => b.id !== newBook.id);
+                renderBookshelf();
+                showToast('书籍保存失败，请检查存储空间后重试');
             }
         }
 
@@ -3679,7 +3908,7 @@
     </script>
     <script>
         (async function refreshPreviewCacheIfNeeded() {
-            const APP_VERSION = '12';
+            const APP_VERSION = '13';
             const versionKey = 'modern-cognito-reader_preview_version';
             if (localStorage.getItem(versionKey) === APP_VERSION) return;
             localStorage.setItem(versionKey, APP_VERSION);
@@ -3699,7 +3928,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js?v=12').catch((err) => {
+                navigator.serviceWorker.register('/sw.js?v=13').catch((err) => {
                     console.warn('Service Worker 注册失败:', err);
                 });
             });

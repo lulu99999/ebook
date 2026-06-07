@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cognito-reader-v12';
+const CACHE_NAME = 'cognito-reader-v13';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
