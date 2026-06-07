@@ -235,6 +235,8 @@
             max-width: none !important;
             margin: 0 !important;
             width: auto !important;
+            height: 100% !important;
+            min-height: 100% !important;
             display: flex !important;
             flex-direction: row !important;
             gap: 0 !important;
@@ -244,6 +246,8 @@
             box-sizing: border-box !important;
             scroll-snap-align: start !important;
             overflow: hidden !important;
+            height: 100%;
+            min-height: 100%;
         }
         /* 侧栏目录/随笔：flex 子项可滚动（避免仅 flex-col 时 display 仍为 block） */
         #catalog-panel:not(.hidden),
@@ -273,9 +277,29 @@
         /* 沉浸式全屏阅读 */
         #reader-view {
             background-color: #ffffff;
+            height: 100dvh;
+            max-height: 100dvh;
+            width: 100%;
+        }
+        #reader-view:not(.hidden) {
+            display: flex !important;
+            flex-direction: column !important;
+            overflow: hidden !important;
         }
         #reader-viewport {
-            padding-bottom: calc(3.75rem + env(safe-area-inset-bottom, 0px));
+            flex: 1 1 0% !important;
+            min-height: 0 !important;
+            max-height: 100% !important;
+            width: 100%;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
+            overscroll-behavior: contain;
+        }
+        #reader-viewport.paged-mode {
+            touch-action: pan-x;
+        }
+        #reader-view:not(.reader-chrome-hidden) #reader-viewport {
+            padding-top: calc(3.25rem + env(safe-area-inset-top, 0px));
         }
         #reader-header {
             transition: transform 0.28s ease, opacity 0.28s ease;
@@ -287,10 +311,13 @@
             pointer-events: none;
         }
         #reader-footer {
+            flex: 0 0 auto !important;
             border: none !important;
             backdrop-filter: none !important;
             background: transparent;
             transition: color 0.28s ease, background-color 0.28s ease;
+            position: relative !important;
+            z-index: 20;
         }
         #reader-footer .reader-footer-btn {
             background-color: rgba(0, 0, 0, 0.06);
@@ -530,7 +557,7 @@
             </button>
         </nav>
 
-        <div id="reader-view" class="fixed inset-0 z-50 hidden reader-chrome-hidden transition-colors duration-300">
+        <div id="reader-view" class="fixed inset-0 z-50 hidden reader-chrome-hidden transition-colors duration-300 flex flex-col overflow-hidden">
             
             <!-- 阅读器顶栏（点击屏幕唤出） -->
             <header id="reader-header" class="ui-no-select absolute top-0 left-0 right-0 bg-white/92 dark:bg-zinc-900/92 backdrop-blur-md border-b border-zinc-100/80 dark:border-zinc-800/60 px-4 py-3 flex items-center justify-between safe-pt z-30">
@@ -564,16 +591,16 @@
                 </div>
             </header>
 
-            <!-- 阅读主窗口（全屏） -->
-            <div id="reader-viewport" class="absolute inset-0 overflow-y-auto no-scrollbar relative select-text" onscroll="handleReaderScroll()">
+            <!-- 阅读主窗口 -->
+            <div id="reader-viewport" class="flex-1 min-h-0 w-full overflow-y-auto no-scrollbar relative select-text" onscroll="handleReaderScroll()">
                 <div id="reader-content" class="max-w-2xl mx-auto text-lg leading-relaxed space-y-6 break-all prose dark:prose-invert font-serif">
                     <!-- 动态载入的正文内容 -->
                 </div>
-                <div id="reader-content-spacer" class="h-16"></div>
+                <div id="reader-content-spacer" class="h-6"></div>
             </div>
 
-            <!-- 底部进度条（与阅读背景同色） -->
-            <footer id="reader-footer" class="ui-no-select absolute bottom-0 left-0 right-0 px-5 pt-2 safe-pb z-20">
+            <!-- 底部进度条（占位布局，不遮挡正文） -->
+            <footer id="reader-footer" class="ui-no-select shrink-0 px-5 pt-2 safe-pb z-20">
                 <div id="reading-mode-indicator" class="sr-only">当前状态：纵向滚动阅览</div>
                 <span id="paged-index-indicator" class="sr-only hidden">第 1 / 1 页</span>
                 <div class="flex items-center space-x-3 text-xs">
@@ -893,6 +920,7 @@
         let configSaveTimer = null;
         let notesByParaIndex = {};
         let scrollRenderGeneration = 0;
+        let activeScrollRender = null;
         const SCROLL_RENDER_CHUNK = 50;
         
         let isReadingSessionActive = false;
@@ -2032,6 +2060,7 @@
                 readerConfig.theme = 'midnight';
             }
             document.getElementById('reader-view').classList.remove('hidden');
+            ensureReaderShellLayout();
             hideReaderChrome();
             closeCatalogPanel();
             document.getElementById('config-panel').classList.add('hidden');
@@ -2085,7 +2114,14 @@
         }
 
         function isChapterPara(para) {
-            return para.startsWith('第[章节]') || (para.startsWith('第') && (para.includes('章') || para.includes('节')));
+            if (para.startsWith('第[章节]')) return true;
+            if (!para.startsWith('第')) return false;
+            const head = para.slice(0, 30);
+            return head.includes('章') || head.includes('节');
+        }
+
+        function formatChapterTitle(para) {
+            return para.replace(/^第\[章节\]\s*/, '').trim();
         }
 
         function getReaderFontFamily() {
@@ -2119,10 +2155,17 @@
         function applyViewportPadding(viewport) {
             if (!viewport) return;
             const margin = getReaderPageMargin();
+            if (readerConfig.mode === 'paged') {
+                viewport.style.paddingLeft = '0';
+                viewport.style.paddingRight = '0';
+                viewport.style.paddingTop = '0';
+                viewport.style.paddingBottom = '0';
+                return;
+            }
             viewport.style.paddingLeft = `${margin}px`;
             viewport.style.paddingRight = `${margin}px`;
-            viewport.style.paddingTop = `${Math.round(margin * 0.9)}px`;
-            viewport.style.paddingBottom = `${Math.round(margin * 0.9)}px`;
+            viewport.style.paddingTop = `${Math.round(margin * 0.45)}px`;
+            viewport.style.paddingBottom = `${Math.round(margin * 0.35)}px`;
         }
 
         function applyParagraphTypography(el, isChapter) {
@@ -2164,7 +2207,7 @@
             applyParagraphTypography(p, isChapter);
             if (isChapter) {
                 p.className = "font-black text-zinc-900 dark:text-white mb-2 border-l-4 border-indigo-600 pl-4 select-text shrink-0";
-                p.innerText = para.replace('[章节]', '').trim();
+                p.innerText = formatChapterTitle(para);
             } else {
                 p.className = "text-justify cursor-pointer py-1 select-text shrink-0";
                 p.innerHTML = htmlOverride || highlightParaText(para, idx, bookNotes);
@@ -2409,15 +2452,16 @@
             }
         }
 
-        function syncPagedPageWidths() {
+        function syncPagedPageDimensions() {
             if (readerConfig.mode !== 'paged') return;
 
             const viewport = document.getElementById('reader-viewport');
             if (!viewport) return;
 
             const pageWidth = viewport.clientWidth;
-            if (pageWidth <= 0) {
-                requestAnimationFrame(syncPagedPageWidths);
+            const pageHeight = viewport.clientHeight;
+            if (pageWidth <= 0 || pageHeight <= 0) {
+                requestAnimationFrame(syncPagedPageDimensions);
                 return;
             }
 
@@ -2427,6 +2471,9 @@
                 page.style.width = `${pageWidth}px`;
                 page.style.minWidth = `${pageWidth}px`;
                 page.style.maxWidth = `${pageWidth}px`;
+                page.style.height = `${pageHeight}px`;
+                page.style.minHeight = `${pageHeight}px`;
+                page.style.maxHeight = `${pageHeight}px`;
             });
         }
 
@@ -2449,7 +2496,7 @@
             let latestChapter = '正文';
             for (let i = currentParaIndex; i >= 0; i--) {
                 const text = currentParagraphs[i];
-                if (text && (text.startsWith('第[章节]') || (text.startsWith('第') && (text.includes('章') || text.includes('节'))))) {
+                if (text && isChapterPara(text)) {
                     latestChapter = text.replace('[章节]', '').trim();
                     break;
                 }
@@ -2496,7 +2543,7 @@
 
             if (isChapter) {
                 p.className += " font-black text-zinc-900 dark:text-white mt-8 mb-4 border-l-4 border-indigo-600 pl-3.5";
-                p.textContent = para.replace('[章节]', '').trim();
+                p.textContent = formatChapterTitle(para);
                 return p;
             }
 
@@ -2509,29 +2556,68 @@
             return p;
         }
 
+        function appendOneScrollChunk(state) {
+            if (!state || state.generation !== scrollRenderGeneration) {
+                if (state === activeScrollRender) activeScrollRender = null;
+                return false;
+            }
+
+            const end = Math.min(state.cursor + SCROLL_RENDER_CHUNK, state.total);
+            const frag = document.createDocumentFragment();
+            for (let idx = state.cursor; idx < end; idx++) {
+                frag.appendChild(createScrollParagraphEl(currentParagraphs[idx], idx, state.bookNotes));
+            }
+            state.container.appendChild(frag);
+            state.cursor = end;
+
+            if (state.cursor >= state.total) {
+                activeScrollRender = null;
+                state.onDone?.();
+                return false;
+            }
+            return true;
+        }
+
+        function scheduleScrollChunkLoop(state) {
+            const tick = () => {
+                if (!activeScrollRender || activeScrollRender.generation !== scrollRenderGeneration) return;
+                if (appendOneScrollChunk(activeScrollRender)) {
+                    requestAnimationFrame(tick);
+                }
+            };
+            requestAnimationFrame(tick);
+        }
+
+        function flushScrollRenderUntil(targetIdx) {
+            if (readerConfig.mode !== 'scroll' || !activeScrollRender) return;
+            const needIdx = Math.min(
+                Math.max(0, targetIdx) + SCROLL_RENDER_CHUNK,
+                currentParagraphs.length - 1
+            );
+            let guard = 0;
+            while (
+                activeScrollRender
+                && activeScrollRender.generation === scrollRenderGeneration
+                && activeScrollRender.cursor <= needIdx
+                && guard++ < 500
+            ) {
+                if (!appendOneScrollChunk(activeScrollRender)) break;
+            }
+        }
+
         function renderScrollContentChunked(container, bookNotes, onDone) {
             const generation = ++scrollRenderGeneration;
             container.replaceChildren();
-            let cursor = 0;
-            const total = currentParagraphs.length;
-
-            const appendChunk = () => {
-                if (generation !== scrollRenderGeneration) return;
-                const end = Math.min(cursor + SCROLL_RENDER_CHUNK, total);
-                const frag = document.createDocumentFragment();
-                for (let idx = cursor; idx < end; idx++) {
-                    frag.appendChild(createScrollParagraphEl(currentParagraphs[idx], idx, bookNotes));
-                }
-                container.appendChild(frag);
-                cursor = end;
-                if (cursor < total) {
-                    requestAnimationFrame(appendChunk);
-                } else {
-                    onDone?.();
-                }
+            activeScrollRender = {
+                generation,
+                container,
+                bookNotes,
+                cursor: 0,
+                total: currentParagraphs.length,
+                onDone
             };
-
-            appendChunk();
+            if (!appendOneScrollChunk(activeScrollRender)) return;
+            scheduleScrollChunkLoop(activeScrollRender);
         }
 
         function renderPagedContentAsync(container, bookNotes) {
@@ -2558,7 +2644,7 @@
                 container.appendChild(frag);
 
                 currentPageIndex = getPageIndexForParagraph(currentParaIndex);
-                syncPagedPageWidths();
+                syncPagedPageDimensions();
                 updatePagedIndicator();
                 restorePagedPosition();
             });
@@ -3213,6 +3299,34 @@
         let touchEndY = 0;
         let readerChromeVisible = false;
 
+        function ensureReaderShellLayout() {
+            const readerView = document.getElementById('reader-view');
+            const viewport = document.getElementById('reader-viewport');
+            const footer = document.getElementById('reader-footer');
+            if (readerView) {
+                readerView.style.display = 'flex';
+                readerView.style.flexDirection = 'column';
+                readerView.style.overflow = 'hidden';
+                readerView.style.height = '100dvh';
+                readerView.style.maxHeight = '100dvh';
+            }
+            if (viewport) {
+                viewport.style.flex = '1 1 0%';
+                viewport.style.minHeight = '0';
+                viewport.style.maxHeight = '100%';
+                viewport.style.width = '100%';
+                viewport.style.position = 'relative';
+                viewport.style.top = '';
+                viewport.style.right = '';
+                viewport.style.bottom = '';
+                viewport.style.left = '';
+            }
+            if (footer) {
+                footer.style.position = 'relative';
+                footer.style.flexShrink = '0';
+            }
+        }
+
         function setReaderChromeVisible(visible) {
             readerChromeVisible = visible;
             const readerView = document.getElementById('reader-view');
@@ -3273,23 +3387,12 @@
             const tapThreshold = 12;
 
             if (readerConfig.mode === 'paged') {
-                if (diffX < -threshold) {
+                if (diffX < -threshold && Math.abs(diffX) > Math.abs(diffY)) {
                     navigatePage('next');
                     return;
                 }
-                if (diffX > threshold) {
+                if (diffX > threshold && Math.abs(diffX) > Math.abs(diffY)) {
                     navigatePage('prev');
-                    return;
-                }
-            } else if (Math.abs(diffX) > threshold && Math.abs(diffX) > Math.abs(diffY)) {
-                const viewport = document.getElementById('reader-viewport');
-                const pageHeight = viewport.clientHeight * 0.85;
-                if (diffX < -threshold) {
-                    viewport.scrollBy({ top: pageHeight, behavior: 'smooth' });
-                    return;
-                }
-                if (diffX > threshold) {
-                    viewport.scrollBy({ top: -pageHeight, behavior: 'smooth' });
                     return;
                 }
             }
@@ -3367,7 +3470,7 @@
             if (!pagedLayout.length) return;
 
             const viewport = document.getElementById('reader-viewport');
-            syncPagedPageWidths();
+            syncPagedPageDimensions();
             const pageWidth = viewport.clientWidth;
             if (pageWidth <= 0) {
                 requestAnimationFrame(() => scrollToPageIndex(pageIdx, behavior));
@@ -3478,14 +3581,21 @@
                 return;
             }
 
+            flushScrollRenderUntil(idx);
+
             const tryScroll = (attempts = 0) => {
+                flushScrollRenderUntil(idx);
                 const target = document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
                 if (target) {
-                    target.scrollIntoView({ behavior, block: 'center' });
+                    const viewport = document.getElementById('reader-viewport');
+                    const targetRect = target.getBoundingClientRect();
+                    const viewportRect = viewport.getBoundingClientRect();
+                    const scrollTop = viewport.scrollTop + (targetRect.top - viewportRect.top) - 12;
+                    viewport.scrollTo({ top: Math.max(0, scrollTop), behavior });
                     if (!speechIsPlaying) clearParagraphHighlight();
                     return;
                 }
-                if (attempts < 160) requestAnimationFrame(() => tryScroll(attempts + 1));
+                if (attempts < 80) requestAnimationFrame(() => tryScroll(attempts + 1));
             };
             tryScroll();
         }
@@ -3517,11 +3627,11 @@
 
             let count = 0;
             currentParagraphs.forEach((para, idx) => {
-                if (para.startsWith('第[章节]') || (para.startsWith('第') && (para.includes('章') || para.includes('节')))) {
+                if (isChapterPara(para)) {
                     count++;
                     const item = document.createElement('button');
                     item.className = "w-full text-left p-3.5 rounded-2xl border-b border-zinc-50 dark:border-zinc-800/30 hover:bg-indigo-50/70 dark:hover:bg-zinc-800/50 text-zinc-700 dark:text-zinc-300 font-extrabold active:scale-[0.98] transition-all truncate";
-                    item.innerText = para.replace('[章节]', '').trim();
+                    item.innerText = formatChapterTitle(para);
                     item.onclick = () => {
                         currentParaIndex = idx;
                         if (readerConfig.mode === 'scroll') {
@@ -3634,16 +3744,17 @@
             const content = document.getElementById('reader-content');
             if (!viewport || !content) return;
 
+            ensureReaderShellLayout();
             updateReaderConfigUi();
-            renderReaderContent();
-
-            viewport.className = "absolute inset-0 no-scrollbar relative transition-colors duration-300 select-text";
+            viewport.className = "flex-1 min-h-0 w-full no-scrollbar relative transition-colors duration-300 select-text";
             applyViewportPadding(viewport);
             if (readerConfig.mode === 'paged') {
                 viewport.classList.add('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
             } else {
                 viewport.classList.add('overflow-y-auto');
             }
+
+            renderReaderContent();
             applyViewportTheme(viewport);
 
             if (currentBook && readerConfig.mode === 'paged') {
@@ -4160,7 +4271,7 @@
     </script>
     <script>
         (async function refreshPreviewCacheIfNeeded() {
-            const APP_VERSION = '13';
+            const APP_VERSION = '14';
             const versionKey = 'modern-cognito-reader_preview_version';
             if (localStorage.getItem(versionKey) === APP_VERSION) return;
             localStorage.setItem(versionKey, APP_VERSION);
