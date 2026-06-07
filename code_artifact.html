@@ -3,24 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#4f46e5">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="我思阅读">
+    <meta name="description" content="智能艺术阅读空间，本地阅读与读书笔记">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192">
+    <link rel="apple-touch-icon" href="/icons/icon-512.png">
     <title>我思故我在 - 智能艺术阅读空间</title>
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Lucide Icons -->
-    <script src="https://cdn.jsdelivr.net/npm/lucide@0.447.0/dist/umd/lucide.min.js"></script>
-    <!-- PDF.js 核心解析引擎 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <!-- 本地依赖（离线可用，原 CDN 已打包至 vendor/） -->
+    <script src="/vendor/tailwindcdn.js"></script>
+    <script src="/vendor/lucide.min.js"></script>
+    <script src="/vendor/pdf.min.js"></script>
     <script>
         if (typeof pdfjsLib !== 'undefined') {
-            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+            pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
         }
     </script>
-    <!-- JSZip 解压引擎，用于 EPUB 解析 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="/vendor/jszip.min.js"></script>
     <!-- Kindle / MOBI 解析引擎 (foliate-js) -->
     <script type="module">
         try {
-        const mobiModule = await import('./vendor/mobi.js');
+        const mobiModule = await import('/vendor/mobi.js');
         const { isMOBI, MOBI } = mobiModule;
 
         function htmlToPlainText(doc) {
@@ -117,6 +125,11 @@
             -ms-overflow-style: none;
             scrollbar-width: none;
         }
+        html, body {
+            height: 100%;
+            min-height: 100dvh;
+            min-height: -webkit-fill-available;
+        }
         body {
             -webkit-tap-highlight-color: transparent;
             background-color: #FAFAFC;
@@ -151,12 +164,21 @@
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             border-radius: 4px;
         }
-        /* 安全区底部与顶部自适应填充 */
+        /* 安全区：在原有内边距上叠加 iPhone 刘海/ Home 条区域 */
         .safe-pb {
-            padding-bottom: env(safe-area-inset-bottom);
+            padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.625rem);
         }
         .safe-pt {
-            padding-top: env(safe-area-inset-top);
+            padding-top: calc(env(safe-area-inset-top, 0px) + 0.25rem);
+        }
+        .tab-scroll-pad {
+            padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 5rem);
+        }
+        #tts-panel {
+            bottom: calc(6rem + env(safe-area-inset-bottom, 0px));
+        }
+        #config-panel {
+            bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
         }
         /* 拟物化实体书右侧边缘立体反光 */
         .book-shine {
@@ -212,29 +234,45 @@
             scroll-snap-align: start !important;
             overflow: hidden !important;
         }
+        /* 侧栏目录/随笔：flex 子项可滚动（避免仅 flex-col 时 display 仍为 block） */
+        #catalog-panel:not(.hidden),
+        #notes-drawer:not(.hidden) {
+            display: flex !important;
+            flex-direction: column;
+            overflow: hidden;
+            pointer-events: auto;
+        }
+        #catalog-list,
+        #notes-drawer-list {
+            flex: 1 1 0%;
+            height: 0;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
+            overscroll-behavior: contain;
+        }
+        /* 目录/随笔打开时禁止底层阅读区抢滚动 */
+        body.reader-overlay-open #reader-viewport {
+            overflow: hidden !important;
+            touch-action: none !important;
+            pointer-events: none !important;
+        }
     </style>
 </head>
-<body class="text-zinc-800 font-sans transition-colors duration-300 overflow-hidden h-screen w-screen flex flex-col dark:bg-zinc-950 dark:text-zinc-200">
+<body class="text-zinc-800 font-sans transition-colors duration-300 overflow-hidden min-h-dvh h-dvh w-screen flex flex-col dark:bg-zinc-950 dark:text-zinc-200">
 
     <audio id="silent-player" loop src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA" class="hidden"></audio>
 
     <div id="splash-screen" class="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-zinc-950 transition-opacity duration-1000">
-        <div class="flex flex-col items-center text-center space-y-8 animate-in fade-in zoom-in duration-1000">
-            <!-- 书本图标：书脊 + 书页线条 -->
-            <div class="relative w-24 h-24 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-3xl flex items-center justify-center shadow-2xl shadow-indigo-500/30 overflow-hidden">
-                <svg class="w-14 h-14 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-                    <path d="M8 7h8"></path>
-                    <path d="M8 11h6"></path>
-                    <path d="M8 15h4"></path>
-                </svg>
-            </div>
-            <div class="space-y-3">
+        <div class="flex flex-col items-center text-center px-8 space-y-10 animate-in fade-in zoom-in duration-1000">
+            <img id="app-logo-splash" src="/icons/icon-transparent.png?v=11" alt="" decoding="sync" class="h-28 w-28 block shrink-0 drop-shadow-2xl" />
+            <div class="space-y-4 pt-1">
                 <h1 class="text-4xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-white to-zinc-500 tracking-tighter">我思故我在</h1>
                 <p class="text-zinc-400 font-bold tracking-widest uppercase text-xs">阅读给我力量</p>
             </div>
-            <button onclick="dismissSplash()" class="group relative px-8 py-3 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden hover:bg-white/10 transition-all active:scale-95">
+            <button onclick="dismissSplash()" class="group relative mt-2 px-10 py-3.5 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden hover:bg-white/10 transition-all active:scale-95">
                 <span class="relative z-10 text-white font-black text-sm tracking-widest">开启心流</span>
                 <div class="absolute inset-0 bg-gradient-to-r from-indigo-500 to-purple-600 opacity-0 group-hover:opacity-20 transition-opacity"></div>
             </button>
@@ -242,23 +280,12 @@
         <p class="absolute bottom-10 text-[10px] text-zinc-600 font-bold tracking-widest uppercase">Cogito, ergo sum</p>
     </div>
 
-    <div id="app" class="flex flex-col h-full w-full relative">
+    <div id="app" class="flex flex-col h-full min-h-0 w-full relative">
 
         <header class="ui-no-select bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-100 dark:border-zinc-800/80 px-5 py-4 flex items-center justify-between safe-pt shrink-0 z-10 transition-colors duration-300">
-            <div class="flex items-center space-x-3">
-                <!-- 简约书之图标 -->
-                <div class="relative w-9 h-9 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-md shadow-indigo-500/20 overflow-hidden">
-                <svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-                    <path d="M8 7h8"></path>
-                    <path d="M8 11h6"></path>
-                    <path d="M8 15h4"></path>
-                </svg>
-                <span class="absolute -top-1 -right-1 flex h-2.5 w-2.5">
-                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-pink-400 opacity-75"></span>
-                        <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-pink-500"></span>
-                    </span>
+            <div class="flex items-center space-x-4">
+                <div class="relative shrink-0">
+                    <img id="app-logo-nav" src="/icons/icon-transparent.png?v=11" alt="" decoding="sync" class="h-10 w-10 block" />
                 </div>
                 <div class="flex flex-col">
                     <span class="font-black text-base tracking-wider bg-gradient-to-r from-zinc-900 via-indigo-950 to-purple-900 dark:from-white dark:via-zinc-100 dark:to-zinc-300 bg-clip-text text-transparent">我思故我在</span>
@@ -267,12 +294,9 @@
             </div>
             
             <div class="flex items-center space-x-3">
-                <!-- 导入图书按钮 -->
-                <label class="cursor-pointer bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-2 shadow-sm transition-all active:scale-95 duration-200">
-                    <i data-lucide="folder-open" class="w-4 h-4"></i>
-                    <span>导入书籍</span>
-                    <input type="file" id="file-input" accept=".txt,.pdf,.epub,.mobi,.azw,.azw3,.prc" class="hidden" onchange="handleBookImport(event)">
-                </label>
+                <button onclick="openNotesExportPicker()" class="text-zinc-500 dark:text-zinc-400 p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90 transition-all duration-200" title="导出笔记">
+                    <i data-lucide="file-down" class="w-4.5 h-4.5"></i>
+                </button>
                 <!-- 主题一键快捷切换 -->
                 <button onclick="toggleDarkMode()" class="text-zinc-500 dark:text-zinc-400 p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:scale-90 transition-all duration-200">
                     <i id="theme-icon" data-lucide="moon" class="w-4.5 h-4.5"></i>
@@ -283,7 +307,7 @@
         <main class="flex-grow overflow-hidden relative">
             
             <!-- 1. 精致书架标签页 -->
-            <section id="tab-bookshelf" class="absolute inset-0 overflow-y-auto px-5 py-6 no-scrollbar flex flex-col space-y-6">
+            <section id="tab-bookshelf" class="absolute inset-0 overflow-y-auto px-5 py-6 tab-scroll-pad no-scrollbar flex flex-col space-y-6">
                 
                 <!-- 拟物历史续读卡片 -->
                 <div id="recent-read-card" class="bg-gradient-to-r from-zinc-900 via-slate-900 to-indigo-950 text-white p-6 rounded-3xl shadow-premium relative overflow-hidden hidden">
@@ -324,8 +348,15 @@
                 <div class="pb-10">
                     <h3 class="font-black text-zinc-900 dark:text-zinc-100 text-base mb-4 flex items-center justify-between">
                         <span>我的馆藏书库 <span id="book-count" class="text-xs font-bold text-zinc-400"> (0)</span></span>
-                        <span class="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold">支持 EPUB / PDF / TXT / MOBI / AZW / AZW3 拖拽导入</span>
+                        <span class="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold">划线、随笔与阅读进度自动保存在本地</span>
                     </h3>
+
+                    <div id="library-recovery-banner" class="hidden mb-4 p-4 rounded-2xl border border-amber-200/80 dark:border-amber-900/40 bg-amber-50/80 dark:bg-amber-950/20 text-xs text-amber-900 dark:text-amber-200">
+                        <p class="font-bold mb-2">检测到书架可能不完整。请始终通过 <span id="app-origin-hint" class="font-black">本页地址</span> 打开，不要换地址或直接用文件路径。</p>
+                        <div class="flex items-center gap-2">
+                            <button onclick="recoverLibraryFromBackups({ force: true })" class="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-black active:scale-95 transition-transform">尝试恢复书架</button>
+                        </div>
+                    </div>
                     
                     <!-- 极具实体感的网格书架 -->
                     <div id="bookshelf-grid" class="grid grid-cols-3 gap-x-5 gap-y-7">
@@ -335,7 +366,7 @@
             </section>
 
             <!-- 2. 数据分析与统计标签页 -->
-            <section id="tab-stats" class="absolute inset-0 overflow-y-auto px-5 py-6 no-scrollbar flex flex-col space-y-6 hidden">
+            <section id="tab-stats" class="absolute inset-0 overflow-y-auto px-5 py-6 tab-scroll-pad no-scrollbar flex flex-col space-y-6 hidden">
                 <div class="bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-zinc-100 dark:border-zinc-800 shadow-premium">
                     <h3 class="font-extrabold text-zinc-900 dark:text-zinc-100 text-base mb-5">今日统计简报</h3>
                     
@@ -394,7 +425,7 @@
             </section>
 
             <!-- 3. 书签与历史记录标签页 -->
-            <section id="tab-history" class="absolute inset-0 overflow-y-auto px-5 py-6 no-scrollbar flex flex-col space-y-4 hidden">
+            <section id="tab-history" class="absolute inset-0 overflow-y-auto px-5 py-6 tab-scroll-pad no-scrollbar flex flex-col space-y-4 hidden">
                 <h3 class="font-extrabold text-zinc-900 dark:text-zinc-100 text-base">思想印记 - 阅读足迹</h3>
                 <div id="history-list" class="space-y-5">
                     <!-- 动态载入历史记录 -->
@@ -402,7 +433,7 @@
             </section>
         </main>
 
-        <nav class="ui-no-select bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-100 dark:border-zinc-800/80 flex items-center justify-around py-2.5 safe-pb shrink-0 z-10 transition-colors duration-300">
+        <nav class="ui-no-select bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-100 dark:border-zinc-800/80 flex items-center justify-around pt-2.5 safe-pb shrink-0 z-20 transition-colors duration-300">
             <button onclick="switchTab('bookshelf')" id="nav-bookshelf" class="flex flex-col items-center justify-center flex-1 text-indigo-600 transition-colors py-1 active:scale-90">
                 <i data-lucide="library" class="w-5 h-5"></i>
                 <span class="text-[10px] mt-1.5 font-bold tracking-wider">书屋</span>
@@ -452,7 +483,7 @@
             </header>
 
             <!-- 阅读主窗口 (高质感自适应) -->
-            <div id="reader-viewport" class="flex-grow overflow-y-auto px-6 py-6 no-scrollbar relative select-text" onscroll="handleReaderScroll()">
+            <div id="reader-viewport" class="flex-grow overflow-y-auto no-scrollbar relative select-text" onscroll="handleReaderScroll()">
                 <div id="reader-content" class="max-w-2xl mx-auto text-lg leading-relaxed space-y-6 break-all prose dark:prose-invert font-serif">
                     <!-- 动态载入的正文内容 -->
                 </div>
@@ -525,25 +556,28 @@
 
             <div id="notes-drawer-backdrop" class="absolute inset-0 bg-zinc-950/25 z-20 hidden" onclick="closeNotesDrawer()"></div>
 
-            <div id="notes-drawer" class="absolute inset-y-0 right-0 w-[85%] max-w-sm bg-white dark:bg-zinc-900 border-l border-zinc-100 dark:border-zinc-800 shadow-floating z-30 hidden flex-col transition-transform duration-300">
+            <div id="notes-drawer" class="absolute inset-y-0 right-0 w-[85%] max-w-sm bg-white dark:bg-zinc-900 border-l border-zinc-100 dark:border-zinc-800 shadow-floating z-30 hidden flex flex-col transition-transform duration-300 overflow-hidden">
                 <div class="p-5 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between safe-pt">
                     <span class="font-black text-sm text-zinc-900 dark:text-zinc-100 flex items-center">
                         <i data-lucide="book-open" class="w-5 h-5 mr-2 text-indigo-600"></i>本书随笔与标记
                     </span>
-                    <button onclick="toggleNotesDrawer()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    <div class="flex items-center space-x-1.5">
+                        <button onclick="exportNotes('current')" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400 hover:text-indigo-500" title="导出本书笔记"><i data-lucide="file-down" class="w-4 h-4"></i></button>
+                        <button onclick="toggleNotesDrawer()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    </div>
                 </div>
-                <div class="px-5 py-3 border-b border-zinc-100 dark:border-zinc-800">
-                    <button onclick="showStandaloneNoteEditor()" class="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black flex items-center justify-center space-x-2 active:scale-95 transition-all shadow-sm shadow-indigo-500/20">
+                <div class="px-5 py-3 border-b border-zinc-100 dark:border-zinc-800 flex items-center space-x-2">
+                    <button onclick="showStandaloneNoteEditor()" class="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black flex items-center justify-center space-x-2 active:scale-95 transition-all shadow-sm shadow-indigo-500/20">
                         <i data-lucide="plus" class="w-4 h-4"></i>
                         <span>新建随笔</span>
                     </button>
                 </div>
-                <div id="notes-drawer-list" class="flex-grow overflow-y-auto p-5 space-y-4 text-xs no-scrollbar">
+                <div id="notes-drawer-list" class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 space-y-4 text-xs no-scrollbar">
                     <!-- 动态装配随笔卡片 -->
                 </div>
             </div>
 
-            <div id="tts-panel" class="absolute bottom-24 left-4 right-4 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-100 dark:border-zinc-800/80 rounded-3xl shadow-floating p-5 z-20 hidden transition-all duration-300 transform translate-y-2">
+            <div id="tts-panel" class="absolute left-4 right-4 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-100 dark:border-zinc-800/80 rounded-3xl shadow-floating p-5 z-20 hidden transition-all duration-300 transform translate-y-2">
                 <div class="flex items-center justify-between mb-4 pb-2 border-b border-zinc-100 dark:border-zinc-800/80">
                     <div class="flex items-center space-x-1.5 text-xs font-black text-zinc-800 dark:text-zinc-200">
                         <i data-lucide="mic" class="w-4 h-4 text-indigo-600 animate-pulse"></i>
@@ -580,7 +614,7 @@
                 </div>
             </div>
 
-            <div id="config-panel" class="absolute bottom-16 left-0 right-0 bg-white dark:bg-zinc-900 border-t border-zinc-100 dark:border-zinc-800 p-6 rounded-t-[2.5rem] shadow-floating z-20 hidden transition-all duration-300">
+            <div id="config-panel" class="absolute left-0 right-0 bg-white dark:bg-zinc-900 border-t border-zinc-100 dark:border-zinc-800 p-6 rounded-t-[2.5rem] shadow-floating z-20 hidden transition-all duration-300">
                 <div class="flex items-center justify-between mb-5">
                     <h5 class="font-extrabold text-sm text-zinc-800 dark:text-zinc-100">视觉微调与视图设定</h5>
                     <button onclick="toggleConfigPanel()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
@@ -625,6 +659,15 @@
                         </div>
                     </div>
 
+                    <!-- 页边距 -->
+                    <div class="flex flex-col space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="text-zinc-400 font-bold">页边留白</span>
+                            <span id="page-margin-lbl" class="font-black text-sm text-indigo-600">32px</span>
+                        </div>
+                        <input type="range" id="page-margin-slider" min="16" max="72" step="4" value="32" oninput="changePageMargin(this.value)" class="w-full h-1 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-indigo-600">
+                    </div>
+
                     <!-- 字体切换 -->
                     <div class="flex items-center justify-between">
                         <span class="text-zinc-400 font-bold">思想语调字体</span>
@@ -636,15 +679,44 @@
                 </div>
             </div>
 
-            <div id="catalog-panel" class="absolute inset-y-0 right-0 w-[85%] max-w-sm bg-white dark:bg-zinc-900 border-l border-zinc-100 dark:border-zinc-800 shadow-floating z-30 hidden flex-col transition-transform duration-300">
-                <div class="p-5 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between safe-pt">
+            <div id="catalog-panel-backdrop" class="fixed inset-0 bg-zinc-950/25 z-[35] hidden" onclick="closeCatalogPanel()"></div>
+
+            <div id="catalog-panel" class="fixed inset-y-0 right-0 w-[85%] max-w-sm bg-white dark:bg-zinc-900 border-l border-zinc-100 dark:border-zinc-800 shadow-floating z-[40] hidden flex flex-col transition-transform duration-300 overflow-hidden">
+                <div class="p-5 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between safe-pt shrink-0">
                     <span class="font-black text-sm text-zinc-900 dark:text-zinc-100 flex items-center">
                         <i data-lucide="book-marked" class="w-5 h-5 mr-2 text-indigo-600"></i>思想目录
                     </span>
                     <button onclick="toggleCatalogPanel()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
                 </div>
-                <div id="catalog-list" class="flex-grow overflow-y-auto p-3 space-y-1 text-xs no-scrollbar">
+                <div id="catalog-list" class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-1 text-xs no-scrollbar">
                     <!-- 目录列表项 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 笔记导出：按书选择 -->
+        <div id="notes-export-modal" class="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-5 z-[65] hidden" onclick="if(event.target===this) closeNotesExportPicker()">
+            <div class="bg-white dark:bg-zinc-900 w-full sm:max-w-md rounded-t-[2rem] sm:rounded-3xl shadow-floating max-h-[82vh] flex flex-col safe-pb">
+                <div class="p-5 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between shrink-0 safe-pt">
+                    <span class="font-black text-sm text-zinc-900 dark:text-zinc-100 flex items-center">
+                        <i data-lucide="file-down" class="w-5 h-5 mr-2 text-indigo-600"></i>导出笔记
+                    </span>
+                    <button onclick="closeNotesExportPicker()" class="p-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-xl text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <p class="px-5 pt-3 text-[11px] text-zinc-400 font-bold">勾选书籍后，每本书将单独导出为一个 JSON 文件</p>
+                <div class="px-5 py-2 flex items-center justify-between shrink-0">
+                    <label class="flex items-center space-x-2 text-xs font-bold text-zinc-600 dark:text-zinc-300 cursor-pointer">
+                        <input type="checkbox" id="notes-export-select-all" class="accent-indigo-600 w-4 h-4" onchange="toggleNotesExportSelectAll(this.checked)">
+                        <span>全选</span>
+                    </label>
+                    <span id="notes-export-count" class="text-[10px] text-zinc-400 font-bold">已选 0 本</span>
+                </div>
+                <div id="notes-export-list" class="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pb-3 space-y-2 no-scrollbar">
+                </div>
+                <div class="p-5 border-t border-zinc-100 dark:border-zinc-800 shrink-0">
+                    <button onclick="exportSelectedNotesSeparately()" class="w-full py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-black active:scale-95 transition-all shadow-sm shadow-indigo-500/20">
+                        分别导出所选书籍
+                    </button>
                 </div>
             </div>
         </div>
@@ -656,9 +728,6 @@
     </div>
 
     <script>
-        const KINDLE_EXTENSIONS = new Set(['mobi', 'azw', 'azw3', 'prc']);
-        const SUPPORTED_EXTENSIONS = new Set(['txt', 'pdf', 'epub', ...KINDLE_EXTENSIONS]);
-
         function dismissSplash() {
             const splash = document.getElementById('splash-screen');
             splash.style.opacity = '0';
@@ -668,61 +737,18 @@
             }, 1000);
         }
 
-        function getFileExtension(filename) {
-            const parts = filename.toLowerCase().split('.');
-            return parts.length > 1 ? parts.pop() : '';
-        }
-
-        function getFileBaseName(filename) {
-            return filename.replace(/\.[^.]+$/, '');
-        }
-
-        async function ensureKindleParser() {
-            if (window.parseKindleToText) return;
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error('Kindle 解析引擎加载超时')), 20000);
-                const onReady = () => {
-                    clearTimeout(timeout);
-                    resolve();
-                };
-                if (window.kindleParserReady) {
-                    onReady();
-                    return;
-                }
-                window.addEventListener('kindle-parser-ready', onReady, { once: true });
-            });
-        }
-
-        function setupDragDropImport() {
-            const shelf = document.getElementById('tab-bookshelf');
-            if (!shelf) return;
-
-            shelf.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                shelf.classList.add('ring-2', 'ring-indigo-400/40', 'ring-inset');
-            });
-            shelf.addEventListener('dragleave', () => {
-                shelf.classList.remove('ring-2', 'ring-indigo-400/40', 'ring-inset');
-            });
-            shelf.addEventListener('drop', (e) => {
-                e.preventDefault();
-                shelf.classList.remove('ring-2', 'ring-indigo-400/40', 'ring-inset');
-                const file = e.dataTransfer?.files?.[0];
-                if (file) processBookFile(file);
-            });
-        }
-
         // 全局核心状态
         let db = {
             books: [],       
             history: [],     
             notes: {},       
-            stats: {         
-                today: 0,    
-                total: 0,    
-                weekly: [0, 0, 0, 0, 0, 0, 0], 
+            stats: {
+                today: 0,
+                total: 0,
+                weekly: [0, 0, 0, 0, 0, 0, 0],
                 bookToday: {},
-                lastUpdated: null
+                lastUpdated: null,
+                weekId: null
             }
         };
 
@@ -739,6 +765,9 @@
         let catalogBuiltForBookId = null;
         let readerConfigApplyTimer = null;
         let configSaveTimer = null;
+        let notesByParaIndex = {};
+        let scrollRenderGeneration = 0;
+        const SCROLL_RENDER_CHUNK = 50;
         
         let isReadingSessionActive = false;
         let readingSecondsElapsed = 0;
@@ -754,7 +783,8 @@
             theme: 'light',
             fontSize: 18,
             fontFamily: 'sans',
-            mode: 'scroll' 
+            mode: 'scroll',
+            pageMargin: 32
         };
 
         let currentSelection = {
@@ -890,7 +920,23 @@
             `;
         }
 
+        function getAppAccessUrl() {
+            if (location.protocol === 'file:') return 'http://localhost:3000';
+            return location.origin;
+        }
+
+        function updateAppOriginHints() {
+            const url = getAppAccessUrl();
+            const hint = document.getElementById('app-origin-hint');
+            if (hint) hint.textContent = url;
+        }
+
         async function initApp() {
+            updateAppOriginHints();
+            if (location.protocol === 'file:') {
+                showToast(`请运行 npm start，并访问 ${getAppAccessUrl()} 以保留书架数据`);
+            }
+
             const { hadSavedData, migratedFromLegacy } = await loadFromLocalStorage();
 
             if (db.books.length === 0 && !hadSavedData) {
@@ -900,6 +946,8 @@
                 showToast(`已从本地恢复 ${db.books.length} 本图书`);
             }
 
+            updateLibraryRecoveryUi();
+
             safeCreateIcons();
             renderBookshelf();
             renderStats();
@@ -907,8 +955,8 @@
             initTtsVoices();
             checkDailyStatsReset();
             setInterval(trackReadingTime, 1000);
-            setupDragDropImport();
             setupSelectionListeners();
+            setupReaderOverlayScrollGuard();
             document.addEventListener('visibilitychange', handleReadingVisibilityChange);
         }
 
@@ -955,13 +1003,27 @@
         // --- 本地持久化：IndexedDB 存书（大容量），并兼容旧版 localStorage ---
         const LIBRARY_DB_NAME = `${appId}_library_v1`;
         const LIBRARY_STORE = 'snapshots';
+        const LIBRARY_BACKUP_KEYS = [`${appId}_db_backup_a`, `${appId}_db_backup_b`];
+        let libraryBackupRotate = 0;
 
         function normalizeDbShape() {
             if (!db.books) db.books = [];
             if (!db.history) db.history = [];
             if (!db.notes) db.notes = {};
-            if (!db.stats) db.stats = { today: 0, total: 0, weekly: [0, 0, 0, 0, 0, 0, 0], bookToday: {}, lastUpdated: null };
+            if (!db.stats) {
+                db.stats = {
+                    today: 0,
+                    total: 0,
+                    weekly: [0, 0, 0, 0, 0, 0, 0],
+                    bookToday: {},
+                    lastUpdated: null,
+                    weekId: null
+                };
+            }
             if (!db.stats.bookToday) db.stats.bookToday = {};
+            if (!Array.isArray(db.stats.weekly) || db.stats.weekly.length !== 7) {
+                db.stats.weekly = [0, 0, 0, 0, 0, 0, 0];
+            }
         }
 
         function openLibraryDB() {
@@ -997,21 +1059,104 @@
             }));
         }
 
-        function loadLegacyLocalStorageDb() {
-            const keys = [`${appId}_db_v3`, `${appId}_db_v2`, `${appId}_db`];
-            for (const key of keys) {
-                const saved = localStorage.getItem(key);
-                if (!saved) continue;
-                try {
-                    const parsed = JSON.parse(saved);
-                    if (parsed && Array.isArray(parsed.books) && parsed.books.length > 0) {
-                        return parsed;
-                    }
-                } catch (e) {
-                    console.warn(`读取旧版书架数据失败: ${key}`, e);
+        function parseLibraryPayload(raw, sourceKey = '') {
+            if (!raw) return null;
+            try {
+                const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                const payload = parsed?.db || parsed;
+                if (payload && Array.isArray(payload.books) && payload.books.length > 0) {
+                    return {
+                        db: payload,
+                        readerConfig: parsed?.readerConfig || null,
+                        savedAt: parsed?.savedAt || 0,
+                        sourceKey
+                    };
                 }
+            } catch (e) {
+                console.warn(`解析书架数据失败: ${sourceKey}`, e);
             }
             return null;
+        }
+
+        function loadLegacyLocalStorageDb() {
+            const keys = [`${appId}_db_v3`, `${appId}_db_v2`, `${appId}_db`, ...LIBRARY_BACKUP_KEYS];
+            for (const key of keys) {
+                const saved = localStorage.getItem(key);
+                const payload = parseLibraryPayload(saved, key);
+                if (payload) return payload.db;
+            }
+            return null;
+        }
+
+        function saveRotatingLibraryBackup(snapshot) {
+            if (!snapshot?.db?.books?.length) return;
+            const key = LIBRARY_BACKUP_KEYS[libraryBackupRotate % LIBRARY_BACKUP_KEYS.length];
+            libraryBackupRotate += 1;
+            try {
+                localStorage.setItem(key, JSON.stringify(snapshot));
+            } catch (e) {
+                console.warn('书架备份写入失败', e);
+            }
+        }
+
+        async function collectLibraryRecoveryCandidates() {
+            const candidates = [];
+            const seen = new Set();
+
+            const pushCandidate = (payload) => {
+                if (!payload || payload.db.books.length === 0) return;
+                const signature = payload.db.books.map(b => `${b.id}:${b.title}`).join('|');
+                if (seen.has(signature)) return;
+                seen.add(signature);
+                candidates.push(payload);
+            };
+
+            try {
+                const idbSnapshot = await readLibrarySnapshot();
+                pushCandidate(parseLibraryPayload(idbSnapshot, 'indexeddb:main'));
+            } catch (e) {
+                console.warn('读取 IndexedDB 备份候选失败', e);
+            }
+
+            [`${appId}_db_v3`, `${appId}_db_v2`, `${appId}_db`, ...LIBRARY_BACKUP_KEYS].forEach((key) => {
+                pushCandidate(parseLibraryPayload(localStorage.getItem(key), key));
+            });
+
+            return candidates.sort((a, b) => {
+                const bookDiff = b.db.books.length - a.db.books.length;
+                if (bookDiff !== 0) return bookDiff;
+                return (b.savedAt || 0) - (a.savedAt || 0);
+            });
+        }
+
+        async function recoverLibraryFromBackups(options = {}) {
+            const { silent = false, minBooks = 1 } = options;
+            const candidates = await collectLibraryRecoveryCandidates();
+            const best = candidates.find(candidate => candidate.db.books.length >= minBooks);
+            if (!best) {
+                if (!silent) showToast('未找到可恢复的书架备份');
+                return false;
+            }
+
+            const currentCount = db.books.length;
+            if (!options.force && currentCount >= best.db.books.length) {
+                if (!silent) showToast('当前书架已是最完整版本');
+                return false;
+            }
+
+            db = best.db;
+            normalizeDbShape();
+            if (best.readerConfig) {
+                readerConfig = { ...readerConfig, ...best.readerConfig };
+            }
+            await persistLibraryData({ skipBackup: true });
+            renderBookshelf();
+            renderStats();
+            renderHistory();
+            if (!silent) {
+                showToast(`已恢复 ${db.books.length} 本图书`);
+            }
+            return true;
         }
 
         function saveLegacyLocalStorageDb() {
@@ -1046,7 +1191,13 @@
                     normalizeDbShape();
                     hadSavedData = true;
                     migratedFromLegacy = true;
-                    await persistLibraryData();
+                    await persistLibraryData({ skipBackup: true });
+                } else {
+                    const recovered = await recoverLibraryFromBackups({ silent: true, minBooks: 1 });
+                    if (recovered) {
+                        hadSavedData = true;
+                        migratedFromLegacy = true;
+                    }
                 }
             }
 
@@ -1066,13 +1217,24 @@
             return { hadSavedData, migratedFromLegacy };
         }
 
-        async function persistLibraryData() {
+        async function persistLibraryData(options = {}) {
             const snapshot = {
                 db,
                 readerConfig,
                 version: 1,
                 savedAt: Date.now()
             };
+
+            if (!options.skipBackup) {
+                try {
+                    const existing = await readLibrarySnapshot();
+                    if (existing?.db?.books?.length) {
+                        saveRotatingLibraryBackup(existing);
+                    }
+                } catch (e) {
+                    console.warn('写入前备份旧书架失败', e);
+                }
+            }
 
             try {
                 await writeLibrarySnapshot(snapshot);
@@ -1104,6 +1266,7 @@
         async function saveToLocalStorage() {
             try {
                 await persistLibraryData();
+                updateLibraryRecoveryUi();
             } catch (e) {
                 console.error('书架保存失败', e);
                 showToast(e?.message === 'QUOTA_EXCEEDED'
@@ -1111,6 +1274,194 @@
                     : '书架保存失败，请刷新后重试');
                 throw e;
             }
+        }
+
+        async function updateLibraryRecoveryUi() {
+            const banner = document.getElementById('library-recovery-banner');
+            if (!banner) return;
+            const candidates = await collectLibraryRecoveryCandidates();
+            const best = candidates[0];
+            const shouldOfferRecovery = !!best && best.db.books.length > db.books.length;
+            banner.classList.toggle('hidden', !shouldOfferRecovery);
+        }
+
+        function sanitizeExportFilename(name) {
+            return (name || 'book').replace(/[\\/:*?"<>|]/g, '_').slice(0, 32);
+        }
+
+        function resolveNotesExportBookIds(scope) {
+            if (scope === 'current' && currentBook) return [currentBook.id];
+            if (Array.isArray(scope)) return scope;
+            return Object.keys(db.notes || {});
+        }
+
+        function buildNotesExportPayload(scope = 'all') {
+            const bookIds = resolveNotesExportBookIds(scope);
+            const books = [];
+            let totalNotes = 0;
+
+            bookIds.forEach((bookId) => {
+                const items = db.notes[bookId] || [];
+                if (!items.length) return;
+                const book = db.books.find((b) => b.id === bookId);
+                totalNotes += items.length;
+                books.push({
+                    bookId,
+                    bookTitle: book?.title || '未知书籍',
+                    bookAuthor: book?.author || '',
+                    notes: items.map((note) => ({
+                        id: note.id,
+                        paraIndex: note.paraIndex,
+                        range: note.range,
+                        text: note.text || '',
+                        color: note.color || '',
+                        note: note.note || '',
+                        isEssay: !!note.isEssay,
+                        timestamp: note.timestamp
+                    }))
+                });
+            });
+
+            return { books, totalNotes };
+        }
+
+        function downloadNotesFile(books, filenameSuffix = '') {
+            const payload = {
+                version: 1,
+                type: 'wosi-notes',
+                exportedAt: new Date().toISOString(),
+                books
+            };
+            const date = new Date().toISOString().slice(0, 10);
+            const suffix = filenameSuffix ? `-${sanitizeExportFilename(filenameSuffix)}` : '';
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `wosi-notes${suffix}-${date}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function exportNotes(scope = 'current') {
+            const { books, totalNotes } = buildNotesExportPayload(scope);
+            if (!totalNotes) {
+                showToast(scope === 'current' ? '本书暂无可导出的笔记' : '暂无可导出的笔记');
+                return;
+            }
+
+            const filenameSuffix = scope === 'current' && books[0]
+                ? books[0].bookTitle
+                : (books.length === 1 ? books[0].bookTitle : '');
+            downloadNotesFile(books, filenameSuffix);
+            showToast(`已导出 ${totalNotes} 条笔记`);
+        }
+
+        function getBooksWithNotes() {
+            return db.books
+                .map((book) => ({
+                    bookId: book.id,
+                    title: book.title,
+                    author: book.author || '',
+                    count: (db.notes[book.id] || []).length
+                }))
+                .filter((item) => item.count > 0)
+                .sort((a, b) => b.count - a.count);
+        }
+
+        function updateNotesExportSelectionCount() {
+            const checked = document.querySelectorAll('#notes-export-list input[type="checkbox"]:checked').length;
+            const el = document.getElementById('notes-export-count');
+            if (el) el.textContent = `已选 ${checked} 本`;
+            const selectAll = document.getElementById('notes-export-select-all');
+            const total = document.querySelectorAll('#notes-export-list input[type="checkbox"]').length;
+            if (selectAll) {
+                selectAll.checked = total > 0 && checked === total;
+                selectAll.indeterminate = checked > 0 && checked < total;
+            }
+        }
+
+        function renderNotesExportList() {
+            const list = document.getElementById('notes-export-list');
+            if (!list) return;
+
+            const items = getBooksWithNotes();
+            list.innerHTML = '';
+
+            if (!items.length) {
+                list.innerHTML = `<div class="text-center py-10 text-zinc-400 font-bold text-xs">暂无有笔记的书籍</div>`;
+                updateNotesExportSelectionCount();
+                return;
+            }
+
+            items.forEach((item) => {
+                const row = document.createElement('label');
+                row.className = 'flex items-center space-x-3 p-3.5 rounded-2xl border border-zinc-100 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-800/40 cursor-pointer active:scale-[0.99] transition-transform';
+                row.innerHTML = `
+                    <input type="checkbox" value="${item.bookId}" class="notes-export-checkbox accent-indigo-600 w-4 h-4 shrink-0" checked onchange="updateNotesExportSelectionCount()">
+                    <div class="min-w-0 flex-1">
+                        <div class="font-extrabold text-sm text-zinc-800 dark:text-zinc-100 truncate">${escapeHtml(item.title)}</div>
+                        <div class="text-[10px] text-zinc-400 font-bold mt-0.5 truncate">${escapeHtml(item.author || '未知作者')} · ${item.count} 条笔记</div>
+                    </div>
+                `;
+                list.appendChild(row);
+            });
+
+            updateNotesExportSelectionCount();
+        }
+
+        function openNotesExportPicker() {
+            const items = getBooksWithNotes();
+            if (!items.length) {
+                showToast('暂无可导出的笔记');
+                return;
+            }
+            renderNotesExportList();
+            document.getElementById('notes-export-modal').classList.remove('hidden');
+            safeCreateIcons();
+        }
+
+        function closeNotesExportPicker() {
+            document.getElementById('notes-export-modal')?.classList.add('hidden');
+        }
+
+        function toggleNotesExportSelectAll(checked) {
+            document.querySelectorAll('#notes-export-list .notes-export-checkbox').forEach((el) => {
+                el.checked = checked;
+            });
+            updateNotesExportSelectionCount();
+        }
+
+        async function exportSelectedNotesSeparately() {
+            const bookIds = [...document.querySelectorAll('#notes-export-list .notes-export-checkbox:checked')]
+                .map((el) => el.value);
+
+            if (!bookIds.length) {
+                showToast('请至少选择一本书');
+                return;
+            }
+
+            let exportedBooks = 0;
+            let totalNotes = 0;
+
+            for (let i = 0; i < bookIds.length; i++) {
+                const { books, totalNotes: noteCount } = buildNotesExportPayload([bookIds[i]]);
+                if (!books.length || !noteCount) continue;
+                downloadNotesFile(books, books[0].bookTitle);
+                exportedBooks += 1;
+                totalNotes += noteCount;
+                if (i < bookIds.length - 1) {
+                    await new Promise((resolve) => setTimeout(resolve, 400));
+                }
+            }
+
+            if (!exportedBooks) {
+                showToast('所选书籍没有可导出的笔记');
+                return;
+            }
+
+            closeNotesExportPicker();
+            showToast(`已分别导出 ${exportedBooks} 本书，共 ${totalNotes} 条笔记`);
         }
 
         function showToast(text) {
@@ -1126,174 +1477,27 @@
             }
         }
 
-        async function handleBookImport(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            await processBookFile(file);
-            event.target.value = '';
-        }
-
-        async function processBookFile(file) {
-            const ext = getFileExtension(file.name);
-            const baseName = getFileBaseName(file.name);
-
-            if (ext === 'kfx') {
-                showToast('KFX 格式暂不支持，请用 Calibre 转为 EPUB 或 MOBI');
-                return;
-            }
-
-            if (!SUPPORTED_EXTENSIONS.has(ext)) {
-                showToast('支持 EPUB / PDF / TXT / MOBI / AZW / AZW3 / PRC');
-                return;
-            }
-
-            showToast(`正在汲取真理：${file.name}...`);
-
-            try {
-                if (ext === 'txt') {
-                    const reader = new FileReader();
-                    reader.onload = function(e) {
-                        addBookToShelf(baseName, '自主思索', e.target.result);
-                    };
-                    reader.readAsText(file, 'UTF-8');
-                } else if (ext === 'pdf') {
-                    const reader = new FileReader();
-                    reader.onload = function(e) {
-                        const typedarray = new Uint8Array(e.target.result);
-                        pdfjsLib.getDocument(typedarray).promise.then(pdf => {
-                            let totalPages = pdf.numPages;
-                            let extractedText = '';
-                            let count = 0;
-                            showToast(`正在提取 PDF 文字通道 (${totalPages}页)...`);
-
-                            for (let i = 1; i <= totalPages; i++) {
-                                pdf.getPage(i).then(page => {
-                                    page.getTextContent().then(textContent => {
-                                        const pageText = textContent.items.map(item => item.str).join(' ');
-                                        extractedText += `\n\n第 ${page.pageNumber} 页\n\n` + pageText;
-                                        count++;
-                                        if (count === totalPages) {
-                                            addBookToShelf(baseName, 'PDF 文献', extractedText);
-                                        }
-                                    });
-                                });
-                            }
-                        }).catch(err => {
-                            console.error(err);
-                            showToast('PDF 提取失败，请检查文件格式');
-                        });
-                    };
-                    reader.readAsArrayBuffer(file);
-                } else if (ext === 'epub') {
-                    const epubText = await parseEpubToText(file);
-                    addBookToShelf(baseName, 'EPUB 经典', epubText);
-                } else if (KINDLE_EXTENSIONS.has(ext)) {
-                    showToast('正在解析 Kindle / MOBI 电子书...');
-                    await ensureKindleParser();
-                    const { title, author, text } = await window.parseKindleToText(file);
-                    if (!text) {
-                        showToast('未能从该 Kindle 文件中提取正文');
-                        return;
-                    }
-                    addBookToShelf(title || baseName, author, text);
-                }
-            } catch (err) {
-                console.error(err);
-                if (err?.message === 'KINDLE_UNSUPPORTED') {
-                    showToast('无法识别该 Kindle 文件，可能含 DRM 或为 KFX 格式');
-                } else {
-                    showToast('文件提取失败，请检查格式或重试（DRM 加密书籍不支持）');
-                }
-            }
-        }
-
-        async function parseEpubToText(file) {
-            const zip = await JSZip.loadAsync(file);
-            const parser = new DOMParser();
-
-            const containerXml = await zip.file("META-INF/container.xml").async("text");
-            const containerDoc = parser.parseFromString(containerXml, "text/xml");
-            const opfPath = containerDoc.querySelector("rootfile").getAttribute("full-path");
-            const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
-
-            const opfXml = await zip.file(opfPath).async("text");
-            const opfDoc = parser.parseFromString(opfXml, "text/xml");
-
-            const manifest = {};
-            const items = opfDoc.querySelectorAll("manifest > item");
-            items.forEach(item => {
-                manifest[item.getAttribute("id")] = item.getAttribute("href");
-            });
-
-            const spine = [];
-            const spineItems = opfDoc.querySelectorAll("spine > itemref");
-            spineItems.forEach(itemref => {
-                spine.push(itemref.getAttribute("idref"));
-            });
-
-            let fullText = "";
-            showToast("正在铺平 EPUB 章节，生成无缝思考流...");
-
-            for (let idref of spine) {
-                const relativeHref = manifest[idref];
-                if (!relativeHref) continue;
-
-                const href = decodeURIComponent(opfDir + relativeHref);
-                const chapterFile = zip.file(href);
-                if (!chapterFile) continue;
-
-                const htmlText = await chapterFile.async("text");
-                const htmlDoc = parser.parseFromString(htmlText, "text/html");
-
-                const elements = htmlDoc.querySelectorAll("h1, h2, h3, h4, p");
-                elements.forEach(el => {
-                    let txt = el.textContent.trim();
-                    if (txt.length > 0) {
-                        if (el.tagName.startsWith('H')) {
-                            fullText += `\n\n第[章节] ${txt}\n\n`;
-                        } else {
-                            fullText += `${txt}\n\n`;
-                        }
-                    }
-                });
-            }
-            return fullText;
-        }
-
-        async function addBookToShelf(title, author, content) {
-            const newBook = {
-                id: 'book_' + Date.now(),
-                title: title,
-                author: author || '思考者',
-                coverBg: '', // 依靠动态Cover生成
-                progress: 0,
-                lastReadPara: 0,
-                dateAdded: new Date().toISOString(),
-                content: content
-            };
-
-            db.books.unshift(newBook);
-            try {
-                await saveToLocalStorage();
-                renderBookshelf();
-                showToast(`《${title}》已收入私人馆藏书库，并已保存到本机！`);
-            } catch (e) {
-                db.books = db.books.filter(b => b.id !== newBook.id);
-                renderBookshelf();
-            }
-        }
-
         function confirmDeleteBook(bookId, e) {
             e.stopPropagation();
             const book = db.books.find(b => b.id === bookId);
             if (!book) return;
-            if (confirm(`确定将《${book.title}》移出书架吗？`)) {
+            if (confirm(`确定将《${book.title}》移出书架吗？\n\n该书阅读进度、随笔与标记会一并删除；心流统计中的总时长不会自动扣减。`)) {
                 deleteBook(bookId, e);
             }
         }
 
-        function deleteBook(bookId, e) {
+        async function deleteBook(bookId, e) {
             if (e) e.stopPropagation();
+            const book = db.books.find(b => b.id === bookId);
+            if (!book) return;
+
+            const snapshot = {
+                books: [...db.books],
+                history: [...db.history],
+                notes: { ...db.notes },
+                statsBookToday: { ...db.stats.bookToday }
+            };
+
             if (currentBook && currentBook.id === bookId) {
                 stopSpeech();
                 stopReadingTimer();
@@ -1303,10 +1507,26 @@
             db.books = db.books.filter(b => b.id !== bookId);
             db.history = db.history.filter(h => h.bookId !== bookId);
             if (db.notes[bookId]) delete db.notes[bookId];
-            saveToLocalStorage();
+            if (db.stats.bookToday[bookId]) delete db.stats.bookToday[bookId];
+
+            try {
+                await saveToLocalStorage();
+            } catch (err) {
+                db.books = snapshot.books;
+                db.history = snapshot.history;
+                db.notes = snapshot.notes;
+                db.stats.bookToday = snapshot.statsBookToday;
+                renderBookshelf();
+                renderHistory();
+                showToast('删除失败：未能写入本机存储，请重试');
+                return;
+            }
+
             renderBookshelf();
             renderHistory();
-            showToast("书籍已安全移出私人书房");
+            renderStats();
+            updateLibraryRecoveryUi();
+            showToast('书籍已安全移出私人书房');
         }
 
         function renderBookshelf() {
@@ -1323,7 +1543,7 @@
                 const coverHTML = generateBookCoverHTML(book);
                 item.innerHTML = `
                     <button onclick="confirmDeleteBook('${book.id}', event)"
-                        class="absolute -top-1.5 -right-1.5 z-20 w-7 h-7 rounded-full bg-zinc-900/80 text-white flex items-center justify-center opacity-80 sm:opacity-0 sm:group-hover:opacity-100 active:scale-90 transition-all shadow-md hover:bg-red-600"
+                        class="absolute -top-1.5 -right-1.5 z-20 w-7 h-7 rounded-full bg-zinc-900/85 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 active:scale-90 transition-all shadow-md hover:bg-red-600"
                         title="移出书架">
                         <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
                     </button>
@@ -1423,12 +1643,12 @@
 
             document.getElementById('reader-book-title').innerText = book.title;
             document.getElementById('reader-view').classList.remove('hidden');
-            document.getElementById('catalog-panel').classList.add('hidden');
+            closeCatalogPanel();
             document.getElementById('config-panel').classList.add('hidden');
             document.getElementById('tts-panel').classList.add('hidden');
             closeNotesDrawer();
 
-            applyReaderConfig(true);
+            requestAnimationFrame(() => applyReaderConfig(true));
             hideSelectionPopover();
             hideMarkActionPopover();
             cachedSelectionRange = null;
@@ -1438,8 +1658,21 @@
             addToHistory(book.id, currentParaIndex);
 
             setupSwipeGestures();
+            setupReaderOverlayScrollGuard();
             setupPagedResizeListener();
             updateMediaSession();
+        }
+
+        function setupReaderOverlayScrollGuard() {
+            const stopScrollBubble = (e) => e.stopPropagation();
+            ['catalog-list', 'notes-drawer-list'].forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el || el.dataset.scrollGuardBound) return;
+                el.dataset.scrollGuardBound = 'true';
+                el.addEventListener('touchstart', stopScrollBubble, { passive: true });
+                el.addEventListener('touchmove', stopScrollBubble, { passive: true });
+                el.addEventListener('wheel', stopScrollBubble, { passive: true });
+            });
         }
 
         function closeReader() {
@@ -1453,7 +1686,7 @@
             stopSpeech();
             stopReadingTimer();
             document.getElementById('reader-view').classList.add('hidden');
-            document.getElementById('catalog-panel').classList.add('hidden');
+            closeCatalogPanel();
             document.getElementById('config-panel').classList.add('hidden');
             document.getElementById('tts-panel').classList.add('hidden');
             closeNotesDrawer();
@@ -1468,6 +1701,37 @@
             return readerConfig.fontFamily === 'serif'
                 ? 'Georgia, STKaiti, KaiTi, serif'
                 : 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+        }
+
+        function getReaderPageMargin() {
+            const margin = Number(readerConfig.pageMargin);
+            if (!Number.isFinite(margin)) return 32;
+            return Math.min(72, Math.max(16, margin));
+        }
+
+        function getPagedPagePadding() {
+            const margin = getReaderPageMargin();
+            return {
+                x: margin,
+                y: Math.round(margin * 0.9)
+            };
+        }
+
+        function applyPagedPagePadding(el) {
+            const pad = getPagedPagePadding();
+            el.style.paddingLeft = `${pad.x}px`;
+            el.style.paddingRight = `${pad.x}px`;
+            el.style.paddingTop = `${pad.y}px`;
+            el.style.paddingBottom = `${pad.y}px`;
+        }
+
+        function applyViewportPadding(viewport) {
+            if (!viewport) return;
+            const margin = getReaderPageMargin();
+            viewport.style.paddingLeft = `${margin}px`;
+            viewport.style.paddingRight = `${margin}px`;
+            viewport.style.paddingTop = `${Math.round(margin * 0.9)}px`;
+            viewport.style.paddingBottom = `${Math.round(margin * 0.9)}px`;
         }
 
         function applyParagraphTypography(el, isChapter) {
@@ -1533,10 +1797,11 @@
         function getMeasureSandbox(pageWidth, pageHeight) {
             if (!measureSandboxEl) {
                 measureSandboxEl = document.createElement('div');
-                measureSandboxEl.className = 'paged-page flex flex-col justify-start gap-4 py-8 px-4';
+                measureSandboxEl.className = 'paged-page flex flex-col justify-start gap-4';
                 document.body.appendChild(measureSandboxEl);
             }
             applyPagedSandboxStyles(measureSandboxEl, pageWidth, pageHeight);
+            applyPagedPagePadding(measureSandboxEl);
             return measureSandboxEl;
         }
 
@@ -1548,6 +1813,7 @@
                 currentParagraphs.length,
                 readerConfig.fontSize,
                 readerConfig.fontFamily,
+                getReaderPageMargin(),
                 viewport?.clientWidth || 0,
                 viewport?.clientHeight || 0,
                 notesSig
@@ -1705,6 +1971,7 @@
 
         function renderReaderContent() {
             const container = document.getElementById('reader-content');
+            scrollRenderGeneration++;
             container.innerHTML = '';
 
             if (currentParagraphs.length === 0) {
@@ -1714,6 +1981,7 @@
             }
 
             const bookNotes = db.notes[currentBook.id] || [];
+            buildNotesIndex(bookNotes);
 
             const viewport = document.getElementById('reader-viewport');
             const content = document.getElementById('reader-content');
@@ -1726,21 +1994,11 @@
                 content.className = "max-w-2xl mx-auto leading-relaxed space-y-6 break-all font-serif";
                 document.getElementById('paged-index-indicator').classList.add('hidden');
 
-                currentParagraphs.forEach((para, idx) => {
-                    const p = document.createElement('p');
-                    p.id = `para-${idx}`;
-                    p.className = "text-justify cursor-pointer hover:bg-zinc-100/40 dark:hover:bg-zinc-800/10 px-2 py-1 rounded-xl transition-all duration-200 select-text";
-                    p.setAttribute('data-para-idx', idx);
-                    const isChapter = isChapterPara(para);
-                    applyParagraphTypography(p, isChapter);
-
-                    if (isChapter) {
-                        p.className += " font-black text-zinc-900 dark:text-white mt-8 mb-4 border-l-4 border-indigo-600 pl-3.5";
-                        p.innerText = para.replace('[章节]', '').trim();
-                    } else {
-                        p.innerHTML = highlightParaText(para, idx, bookNotes);
+                renderScrollContentChunked(container, bookNotes, () => {
+                    updateSliderProgress();
+                    if (readerConfig.mode === 'scroll') {
+                        scrollToParagraph(currentParaIndex, 'auto');
                     }
-                    container.appendChild(p);
                 });
             } else {
                 document.getElementById('reader-content-spacer').classList.add('hidden');
@@ -1748,32 +2006,15 @@
                 viewport.classList.add('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
                 content.className = "leading-relaxed break-all font-serif";
                 document.getElementById('paged-index-indicator').classList.remove('hidden');
-
-                pagedLayout = buildPagedLayout(bookNotes);
-                if (pagedLayout.length === 0) {
-                    requestAnimationFrame(() => renderReaderContent());
-                    return;
-                }
-
-                pagedLayout.forEach((page, pageIdx) => {
-                    const pageDiv = document.createElement('div');
-                    pageDiv.id = `page-${pageIdx}`;
-                    pageDiv.className = "paged-page flex flex-col justify-start gap-4 py-8 px-4";
-                    page.blocks.forEach(block => {
-                        pageDiv.appendChild(block.el.cloneNode(true));
-                    });
-                    container.appendChild(pageDiv);
-                });
-
-                currentPageIndex = getPageIndexForParagraph(currentParaIndex);
-                syncPagedPageWidths();
-                updatePagedIndicator();
+                renderPagedContentAsync(container, bookNotes);
             }
 
             updateSliderProgress();
             if (catalogBuiltForBookId !== currentBook?.id) {
-                buildCatalog();
                 catalogBuiltForBookId = currentBook?.id;
+                scheduleIdleTask(() => {
+                    if (currentBook?.id === catalogBuiltForBookId) buildCatalog();
+                });
             }
         }
 
@@ -1837,8 +2078,103 @@
                 .replace(/"/g, '&quot;');
         }
 
+        function buildNotesIndex(bookNotes) {
+            notesByParaIndex = {};
+            (bookNotes || []).forEach((note) => {
+                const idx = note.paraIndex;
+                if (!notesByParaIndex[idx]) notesByParaIndex[idx] = [];
+                notesByParaIndex[idx].push(note);
+            });
+        }
+
+        function scheduleIdleTask(fn) {
+            if ('requestIdleCallback' in window) {
+                requestIdleCallback(fn, { timeout: 1800 });
+            } else {
+                setTimeout(fn, 16);
+            }
+        }
+
+        function createScrollParagraphEl(para, idx, bookNotes) {
+            const p = document.createElement('p');
+            p.id = `para-${idx}`;
+            p.className = "text-justify cursor-pointer hover:bg-zinc-100/40 dark:hover:bg-zinc-800/10 px-2 py-1 rounded-xl transition-all duration-200 select-text";
+            p.setAttribute('data-para-idx', idx);
+            const isChapter = isChapterPara(para);
+            applyParagraphTypography(p, isChapter);
+
+            if (isChapter) {
+                p.className += " font-black text-zinc-900 dark:text-white mt-8 mb-4 border-l-4 border-indigo-600 pl-3.5";
+                p.textContent = para.replace('[章节]', '').trim();
+                return p;
+            }
+
+            const paraNotes = notesByParaIndex[idx];
+            if (paraNotes?.length) {
+                p.innerHTML = highlightParaText(para, idx, paraNotes);
+            } else {
+                p.textContent = para;
+            }
+            return p;
+        }
+
+        function renderScrollContentChunked(container, bookNotes, onDone) {
+            const generation = ++scrollRenderGeneration;
+            container.replaceChildren();
+            let cursor = 0;
+            const total = currentParagraphs.length;
+
+            const appendChunk = () => {
+                if (generation !== scrollRenderGeneration) return;
+                const end = Math.min(cursor + SCROLL_RENDER_CHUNK, total);
+                const frag = document.createDocumentFragment();
+                for (let idx = cursor; idx < end; idx++) {
+                    frag.appendChild(createScrollParagraphEl(currentParagraphs[idx], idx, bookNotes));
+                }
+                container.appendChild(frag);
+                cursor = end;
+                if (cursor < total) {
+                    requestAnimationFrame(appendChunk);
+                } else {
+                    onDone?.();
+                }
+            };
+
+            appendChunk();
+        }
+
+        function renderPagedContentAsync(container, bookNotes) {
+            container.innerHTML = '<p class="text-zinc-400 text-center font-bold py-20">正在排版，请稍候…</p>';
+            scheduleIdleTask(() => {
+                pagedLayout = buildPagedLayout(bookNotes);
+                if (pagedLayout.length === 0) {
+                    requestAnimationFrame(() => renderReaderContent());
+                    return;
+                }
+
+                container.replaceChildren();
+                const frag = document.createDocumentFragment();
+                pagedLayout.forEach((page, pageIdx) => {
+                    const pageDiv = document.createElement('div');
+                    pageDiv.id = `page-${pageIdx}`;
+                    pageDiv.className = "paged-page flex flex-col justify-start gap-4";
+                    applyPagedPagePadding(pageDiv);
+                    page.blocks.forEach((block) => {
+                        pageDiv.appendChild(block.el.cloneNode(true));
+                    });
+                    frag.appendChild(pageDiv);
+                });
+                container.appendChild(frag);
+
+                currentPageIndex = getPageIndexForParagraph(currentParaIndex);
+                syncPagedPageWidths();
+                updatePagedIndicator();
+                restorePagedPosition();
+            });
+        }
+
         function highlightParaText(paraStr, paraIdx, notesList) {
-            const paraNotes = notesList.filter(n => n.paraIndex === paraIdx);
+            const paraNotes = notesByParaIndex[paraIdx] ?? notesList.filter(n => n.paraIndex === paraIdx);
             if (paraNotes.length === 0) return escapeHtml(paraStr);
 
             paraNotes.sort((a, b) => a.range[0] - b.range[0]);
@@ -2381,18 +2717,26 @@
             editNoteFromDrawer(activeMarkNoteId);
         }
 
+        function syncReaderOverlayLock() {
+            const catalogOpen = !document.getElementById('catalog-panel').classList.contains('hidden');
+            const notesOpen = !document.getElementById('notes-drawer').classList.contains('hidden');
+            document.body.classList.toggle('reader-overlay-open', catalogOpen || notesOpen);
+        }
+
         function closeNotesDrawer() {
             document.getElementById('notes-drawer').classList.add('hidden');
             document.getElementById('notes-drawer-backdrop').classList.add('hidden');
+            syncReaderOverlayLock();
         }
 
         function openNotesDrawer() {
             document.getElementById('config-panel').classList.add('hidden');
             document.getElementById('tts-panel').classList.add('hidden');
-            document.getElementById('catalog-panel').classList.add('hidden');
+            closeCatalogPanel();
             document.getElementById('notes-drawer-backdrop').classList.remove('hidden');
             document.getElementById('notes-drawer').classList.remove('hidden');
             renderNotesDrawerList();
+            syncReaderOverlayLock();
         }
 
         function toggleNotesDrawer() {
@@ -2491,6 +2835,10 @@
         }
 
         function handleSwipeGesture() {
+            const catalogOpen = !document.getElementById('catalog-panel').classList.contains('hidden');
+            const notesOpen = !document.getElementById('notes-drawer').classList.contains('hidden');
+            if (catalogOpen || notesOpen) return;
+
             const diffX = touchEndX - touchStartX;
             const threshold = 55;
 
@@ -2533,6 +2881,15 @@
                 content.style.fontFamily = getReaderFontFamily();
             }
             if (fontSizeLbl) fontSizeLbl.innerText = `${readerConfig.fontSize}px`;
+
+            const pageMargin = getReaderPageMargin();
+            const pageMarginLbl = document.getElementById('page-margin-lbl');
+            const pageMarginSlider = document.getElementById('page-margin-slider');
+            if (pageMarginLbl) pageMarginLbl.innerText = `${pageMargin}px`;
+            if (pageMarginSlider) pageMarginSlider.value = String(pageMargin);
+            if (!Number.isFinite(Number(readerConfig.pageMargin))) {
+                readerConfig.pageMargin = pageMargin;
+            }
 
             const serifBtn = document.getElementById('font-serif-btn');
             const sansBtn = document.getElementById('font-sans-btn');
@@ -2618,7 +2975,8 @@
                     const diff = Math.abs(rect.top - middleY);
                     if (diff < closestDiff) {
                         closestDiff = diff;
-                        closestIdx = i;
+                        const paraIdx = parseInt(paras[i].getAttribute('data-para-idx'), 10);
+                        closestIdx = Number.isFinite(paraIdx) ? paraIdx : i;
                     }
                 }
 
@@ -2673,20 +3031,23 @@
             updateSliderProgress();
         }
 
-        function scrollToParagraph(idx) {
+        function scrollToParagraph(idx, behavior = 'smooth') {
             if (readerConfig.mode === 'paged') {
                 currentParaIndex = idx;
                 scrollToPageIndex(getPageIndexForParagraph(idx), 'auto');
                 return;
             }
 
-            const target = document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
-            if (target) {
-                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
-            if (!speechIsPlaying) {
-                clearParagraphHighlight();
-            }
+            const tryScroll = (attempts = 0) => {
+                const target = document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
+                if (target) {
+                    target.scrollIntoView({ behavior, block: 'center' });
+                    if (!speechIsPlaying) clearParagraphHighlight();
+                    return;
+                }
+                if (attempts < 160) requestAnimationFrame(() => tryScroll(attempts + 1));
+            };
+            tryScroll();
         }
 
         function clearParagraphHighlight() {
@@ -2796,7 +3157,8 @@
             updateReaderConfigUi();
             renderReaderContent();
 
-            viewport.className = "flex-grow px-6 py-4 no-scrollbar relative transition-colors duration-300 select-text";
+            viewport.className = "flex-grow no-scrollbar relative transition-colors duration-300 select-text";
+            applyViewportPadding(viewport);
             if (readerConfig.mode === 'paged') {
                 viewport.classList.add('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
             } else {
@@ -2804,12 +3166,8 @@
             }
             applyViewportTheme(viewport);
 
-            if (currentBook) {
-                if (readerConfig.mode === 'scroll') {
-                    scrollToParagraph(currentParaIndex);
-                } else {
-                    restorePagedPosition();
-                }
+            if (currentBook && readerConfig.mode === 'paged') {
+                restorePagedPosition();
             }
         }
 
@@ -2833,6 +3191,13 @@
 
         function changeFontFamily(family) {
             readerConfig.fontFamily = family;
+            invalidatePagedLayoutCache();
+            scheduleConfigSave();
+            applyReaderConfig();
+        }
+
+        function changePageMargin(value) {
+            readerConfig.pageMargin = Math.min(72, Math.max(16, parseInt(value, 10) || 32));
             invalidatePagedLayoutCache();
             scheduleConfigSave();
             applyReaderConfig();
@@ -2890,8 +3255,7 @@
                     artist: currentBook.author || '我思故我在',
                     album: '私人朗读思考流',
                     artwork: [
-                        { src: 'https://placehold.co/96x96/4f46e5/ffffff?text=EBook', sizes: '96x96', type: 'image/png' },
-                        { src: 'https://placehold.co/512x512/4f46e5/ffffff?text=EBook', sizes: '512x512', type: 'image/png' }
+                        { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' }
                     ]
                 });
 
@@ -3063,9 +3427,8 @@
         }
 
         function handleReadingVisibilityChange() {
-            if (document.visibilityState === 'visible' && isReaderOpen()) {
-                isReadingSessionActive = true;
-            }
+            if (!isReaderOpen()) return;
+            isReadingSessionActive = document.visibilityState === 'visible';
         }
 
         function recordReadingMinute(bookId) {
@@ -3080,8 +3443,9 @@
             db.stats.weekly[getDayOfWeekIndex()] += 1;
             db.stats.bookToday[bookId] = (db.stats.bookToday[bookId] || 0) + 1;
 
-            saveToLocalStorage();
+            saveToLocalStorage().catch(() => {});
             updateShelfDailyProgress();
+            renderStats();
         }
 
         // 仅统计阅读器打开且页面可见时的时长
@@ -3100,24 +3464,43 @@
         }
 
         function getDayOfWeekIndex() {
-            let day = new Date().getDay(); 
+            let day = new Date().getDay();
             day = day - 1;
             if (day < 0) day = 6;
             return day;
         }
 
+        function getWeekId(date = new Date()) {
+            const d = new Date(date);
+            const day = d.getDay();
+            const mondayOffset = day === 0 ? -6 : 1 - day;
+            d.setDate(d.getDate() + mondayOffset);
+            d.setHours(0, 0, 0, 0);
+            return d.toISOString().slice(0, 10);
+        }
+
         function checkDailyStatsReset() {
             const todayStr = new Date().toDateString();
+            const weekId = getWeekId();
+            let changed = false;
+
+            if (db.stats.weekId !== weekId) {
+                db.stats.weekly = [0, 0, 0, 0, 0, 0, 0];
+                db.stats.weekId = weekId;
+                changed = true;
+            }
+
             if (db.stats.lastUpdated !== todayStr) {
                 db.stats.today = 0;
                 db.stats.bookToday = {};
                 db.stats.lastUpdated = todayStr;
-                
-                if (new Date().getDay() === 1) {
-                    db.stats.weekly = [0, 0, 0, 0, 0, 0, 0];
-                }
-                saveToLocalStorage();
+                changed = true;
+            }
+
+            if (changed) {
+                saveToLocalStorage().catch(() => {});
                 updateShelfDailyProgress();
+                renderStats();
             }
         }
 
@@ -3134,7 +3517,8 @@
                 total: 0,
                 weekly: [0, 0, 0, 0, 0, 0, 0],
                 bookToday: {},
-                lastUpdated: new Date().toDateString()
+                lastUpdated: new Date().toDateString(),
+                weekId: getWeekId()
             };
             saveToLocalStorage();
             renderStats();
@@ -3164,7 +3548,9 @@
             const svg = document.getElementById('weekly-chart');
             svg.innerHTML = '';
 
-            const weeklyData = db.stats.weekly;
+            const weeklyData = Array.isArray(db.stats.weekly) && db.stats.weekly.length === 7
+                ? db.stats.weekly
+                : [0, 0, 0, 0, 0, 0, 0];
             const maxVal = Math.max(10, ...weeklyData); 
 
             const paddingLeft = 30;
@@ -3251,7 +3637,7 @@
             const panel = document.getElementById('tts-panel');
             panel.classList.toggle('hidden');
             document.getElementById('config-panel').classList.add('hidden');
-            document.getElementById('catalog-panel').classList.add('hidden');
+            closeCatalogPanel();
             closeNotesDrawer();
         }
 
@@ -3259,16 +3645,64 @@
             const panel = document.getElementById('config-panel');
             panel.classList.toggle('hidden');
             document.getElementById('tts-panel').classList.add('hidden');
-            document.getElementById('catalog-panel').classList.add('hidden');
+            closeCatalogPanel();
             closeNotesDrawer();
+        }
+
+        function closeCatalogPanel() {
+            document.getElementById('catalog-panel').classList.add('hidden');
+            document.getElementById('catalog-panel-backdrop').classList.add('hidden');
+            syncReaderOverlayLock();
+        }
+
+        function openCatalogPanel() {
+            document.getElementById('config-panel').classList.add('hidden');
+            document.getElementById('tts-panel').classList.add('hidden');
+            closeNotesDrawer();
+            if (catalogBuiltForBookId !== currentBook?.id) {
+                buildCatalog();
+                catalogBuiltForBookId = currentBook?.id;
+            }
+            document.getElementById('catalog-panel-backdrop').classList.remove('hidden');
+            document.getElementById('catalog-panel').classList.remove('hidden');
+            syncReaderOverlayLock();
         }
 
         function toggleCatalogPanel() {
             const panel = document.getElementById('catalog-panel');
-            panel.classList.toggle('hidden');
-            document.getElementById('config-panel').classList.add('hidden');
-            document.getElementById('tts-panel').classList.add('hidden');
-            closeNotesDrawer();
+            if (panel.classList.contains('hidden')) {
+                openCatalogPanel();
+            } else {
+                closeCatalogPanel();
+            }
+        }
+    </script>
+    <script>
+        (async function refreshPreviewCacheIfNeeded() {
+            const APP_VERSION = '12';
+            const versionKey = 'modern-cognito-reader_preview_version';
+            if (localStorage.getItem(versionKey) === APP_VERSION) return;
+            localStorage.setItem(versionKey, APP_VERSION);
+            try {
+                if ('serviceWorker' in navigator) {
+                    const regs = await navigator.serviceWorker.getRegistrations();
+                    await Promise.all(regs.map((reg) => reg.unregister()));
+                }
+                if ('caches' in window) {
+                    const keys = await caches.keys();
+                    await Promise.all(keys.map((key) => caches.delete(key)));
+                }
+            } catch (err) {
+                console.warn('预览缓存清理失败:', err);
+            }
+        })();
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js?v=12').catch((err) => {
+                    console.warn('Service Worker 注册失败:', err);
+                });
+            });
         }
     </script>
 </body>
