@@ -1,6 +1,6 @@
 {
-  "name": "我思故我在 · 阅读器",
-  "short_name": "我思阅读",
+  "name": "我思阅读器",
+  "short_name": "我思阅读器",
   "description": "智能艺术阅读空间，本地阅读与读书笔记",
   "start_url": "/code_artifact.html",
   "scope": "/",

@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#4f46e5">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="我思阅读">
+    <meta name="apple-mobile-web-app-title" content="我思阅读器">
     <meta name="description" content="智能艺术阅读空间，本地阅读与读书笔记">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
@@ -14,7 +14,7 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192">
     <link rel="apple-touch-icon" href="/icons/icon-512.png">
-    <title>我思故我在 - 智能艺术阅读空间</title>
+    <title>我思阅读器</title>
     <!-- 本地依赖（离线可用，原 CDN 已打包至 vendor/） -->
     <script src="/vendor/tailwindcdn.js"></script>
     <script src="/vendor/lucide.min.js"></script>
@@ -37,8 +37,10 @@
             elements.forEach(el => {
                 const txt = el.textContent.trim();
                 if (!txt) return;
-                if (/^H[1-6]$/i.test(el.tagName)) {
+                if (/^H1$/i.test(el.tagName)) {
                     fullText += `\n\n第[章节] ${txt}\n\n`;
+                } else if (/^H[2-6]$/i.test(el.tagName)) {
+                    fullText += `\n\n${txt}\n\n`;
                 } else {
                     fullText += `${txt}\n\n`;
                 }
@@ -60,10 +62,28 @@
                 fullText += htmlToPlainText(doc);
             }
             const author = book.metadata?.author;
+            let coverImage = null;
+            try {
+                if (typeof book.getCover === 'function') {
+                    let coverBlob = await book.getCover();
+                    if (coverBlob && typeof window.blobToCoverDataUrl === 'function') {
+                        if (!coverBlob.type) {
+                            const buf = coverBlob instanceof Blob
+                                ? await coverBlob.arrayBuffer()
+                                : coverBlob;
+                            coverBlob = new Blob([buf], { type: 'image/jpeg' });
+                        }
+                        coverImage = await window.blobToCoverDataUrl(coverBlob);
+                    }
+                }
+            } catch (coverErr) {
+                console.warn('Kindle 封面提取失败', coverErr);
+            }
             return {
                 title: book.metadata?.title || file.name.replace(/\.[^.]+$/, ''),
                 author: Array.isArray(author) ? (author[0] || 'Kindle 经典') : (author || 'Kindle 经典'),
-                text: fullText.trim()
+                text: fullText.trim(),
+                coverImage
             };
         };
 
@@ -294,6 +314,7 @@
             -webkit-overflow-scrolling: touch;
             touch-action: pan-y;
             overscroll-behavior: contain;
+            padding-bottom: calc(3rem + env(safe-area-inset-bottom, 0px));
         }
         #reader-viewport.paged-mode {
             touch-action: pan-x;
@@ -310,14 +331,51 @@
             opacity: 0;
             pointer-events: none;
         }
+        #reader-header.theme-midnight {
+            background-color: #18181b;
+            border-color: #3f3f46;
+        }
+        #reader-header.theme-midnight #reader-book-title {
+            color: #e0e7ff;
+        }
+        #reader-header.theme-midnight #reader-chapter-title {
+            color: #a5b4fc;
+        }
+        #reader-header.theme-midnight button {
+            color: #c7d2fe;
+            background-color: #27272a;
+        }
+        #reader-header.theme-midnight button:hover {
+            background-color: #3f3f46;
+        }
+        #reader-header.theme-dark {
+            background-color: #000000;
+            border-color: #27272a;
+        }
+        #reader-header.theme-dark #reader-book-title {
+            color: #f4f4f5;
+        }
+        #reader-header.theme-dark #reader-chapter-title {
+            color: #a1a1aa;
+        }
+        #reader-header.theme-dark button {
+            color: #e4e4e7;
+            background-color: #18181b;
+        }
+        #reader-viewport.bg-zinc-900 .reader-chapter-heading,
+        #reader-viewport.bg-black .reader-chapter-heading {
+            color: #e0e7ff;
+            border-left-color: #818cf8;
+        }
         #reader-footer {
-            flex: 0 0 auto !important;
             border: none !important;
             backdrop-filter: none !important;
-            background: transparent;
             transition: color 0.28s ease, background-color 0.28s ease;
-            position: relative !important;
-            z-index: 20;
+            position: absolute !important;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 30;
         }
         #reader-footer .reader-footer-btn {
             background-color: rgba(0, 0, 0, 0.06);
@@ -560,7 +618,7 @@
         <div id="reader-view" class="fixed inset-0 z-50 hidden reader-chrome-hidden transition-colors duration-300 flex flex-col overflow-hidden">
             
             <!-- 阅读器顶栏（点击屏幕唤出） -->
-            <header id="reader-header" class="ui-no-select absolute top-0 left-0 right-0 bg-white/92 dark:bg-zinc-900/92 backdrop-blur-md border-b border-zinc-100/80 dark:border-zinc-800/60 px-4 py-3 flex items-center justify-between safe-pt z-30">
+            <header id="reader-header" class="ui-no-select absolute top-0 left-0 right-0 bg-white dark:bg-zinc-900 border-b border-zinc-100 dark:border-zinc-800 px-4 py-3 flex items-center justify-between safe-pt z-30">
                 <div class="flex items-center space-x-2">
                     <button onclick="closeReader()" class="p-2 rounded-xl text-zinc-600 dark:text-zinc-300 bg-zinc-50 dark:bg-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-700 active:scale-90 transition-transform">
                         <i data-lucide="chevron-left" class="w-5.5 h-5.5"></i>
@@ -600,7 +658,7 @@
             </div>
 
             <!-- 底部进度条（占位布局，不遮挡正文） -->
-            <footer id="reader-footer" class="ui-no-select shrink-0 px-5 pt-2 safe-pb z-20">
+            <footer id="reader-footer" class="ui-no-select absolute bottom-0 left-0 right-0 px-5 pt-2 safe-pb z-30">
                 <div id="reading-mode-indicator" class="sr-only">当前状态：纵向滚动阅览</div>
                 <span id="paged-index-indicator" class="sr-only hidden">第 1 / 1 页</span>
                 <div class="flex items-center space-x-3 text-xs">
@@ -838,12 +896,27 @@
         const SUPPORTED_EXTENSIONS = new Set(['txt', 'pdf', 'epub', ...KINDLE_EXTENSIONS]);
 
         function dismissSplash() {
+            if (splashDismissed) return;
+            splashDismissed = true;
+
             const splash = document.getElementById('splash-screen');
+            if (!splash) {
+                initApp().catch((err) => console.error('应用初始化失败', err));
+                return;
+            }
+
             splash.style.opacity = '0';
             setTimeout(async () => {
                 splash.remove();
-                await initApp();
-            }, 1000);
+                try {
+                    await initApp();
+                } catch (err) {
+                    console.error('应用初始化失败', err);
+                    appInitialized = false;
+                    splashDismissed = false;
+                    showToast('加载失败，请确认已运行 npm start 后刷新重试');
+                }
+            }, 320);
         }
 
         function getFileExtension(filename) {
@@ -918,9 +991,14 @@
         let catalogBuiltForBookId = null;
         let readerConfigApplyTimer = null;
         let configSaveTimer = null;
+        let readingPositionSaveTimer = null;
         let notesByParaIndex = {};
         let scrollRenderGeneration = 0;
         let activeScrollRender = null;
+        let pendingJumpParaIdx = null;
+        let jumpToParagraphToken = 0;
+        let splashDismissed = false;
+        let appInitialized = false;
         const SCROLL_RENDER_CHUNK = 50;
         
         let isReadingSessionActive = false;
@@ -931,7 +1009,9 @@
         let speechIsPlaying = false;
         let speechSpeed = 1.0;
         let selectedVoice = null;
-        let ttsActiveIndex = null; 
+        let ttsActiveIndex = null;
+        let ttsSpeakTimer = null;
+        let ttsSpeakToken = 0;
 
         let readerConfig = {
             theme: 'light',
@@ -1010,65 +1090,153 @@
             return `linear-gradient(135deg, hsl(${hue1}, 40%, 20%) 0%, hsl(${hue1}, 20%, 35%) 100%)`;
         }
 
-        function generateBookCoverThumbHTML(book) {
+        async function blobToDataUrlDirect(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error || new Error('COVER_READ_FAILED'));
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        window.blobToCoverDataUrl = async function blobToCoverDataUrl(blob, maxWidth = 320) {
+            if (!blob || !blob.size) return null;
+            try {
+                const objectUrl = URL.createObjectURL(blob);
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        URL.revokeObjectURL(objectUrl);
+                        const scale = Math.min(1, maxWidth / Math.max(img.width, 1));
+                        const width = Math.max(1, Math.round(img.width * scale));
+                        const height = Math.max(1, Math.round(img.height * scale));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = width;
+                        canvas.height = height;
+                        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.82));
+                    };
+                    img.onerror = () => {
+                        URL.revokeObjectURL(objectUrl);
+                        reject(new Error('COVER_IMAGE_LOAD_FAILED'));
+                    };
+                    img.src = objectUrl;
+                });
+                return dataUrl;
+            } catch {
+                return blobToDataUrlDirect(blob);
+            }
+        };
+
+        function getBookCoverImage(book) {
+            if (!book) return null;
+            return book.coverImage || bookCovers[book.id] || null;
+        }
+
+        function setBookCoverImage(bookId, coverImage) {
+            if (!bookId || !coverImage) return;
+            bookCovers[bookId] = coverImage;
+            const book = db.books.find(b => b.id === bookId);
+            if (book) book.coverImage = coverImage;
+        }
+
+        function hydrateBookCovers() {
+            db.books.forEach((book) => {
+                if (bookCovers[book.id] && !book.coverImage) {
+                    book.coverImage = bookCovers[book.id];
+                } else if (book.coverImage && !bookCovers[book.id]) {
+                    bookCovers[book.id] = book.coverImage;
+                }
+            });
+        }
+
+        function renderCoverProgressBar(progress, compact = false) {
+            const heightClass = compact ? 'h-0.5' : 'h-1';
+            return `
+                <div class="${heightClass} bg-white/20 rounded-full overflow-hidden">
+                    <div class="bg-indigo-400/90 h-full transition-all duration-500" style="width: ${progress}%"></div>
+                </div>
+            `;
+        }
+
+        function renderGradientCoverFace(book, compact = false) {
             const gradient = getBookCoverGradient(book);
             const author = escapeHtml(book.author || '未知作者');
             const title = escapeHtml(book.title || '未命名');
             const progress = Math.round(book.progress || 0);
 
+            if (compact) {
+                return `
+                    <div class="flex-grow flex flex-col justify-between p-1.5 relative overflow-hidden min-w-0" style="background: ${gradient}">
+                        <span class="text-[5px] text-white/55 font-bold truncate leading-none">${author}</span>
+                        <span class="text-[7px] text-white/95 font-black text-center leading-tight line-clamp-3 px-0.5 drop-shadow-sm">${title}</span>
+                        ${renderCoverProgressBar(progress, true)}
+                    </div>
+                `;
+            }
+
             return `
-                <div class="w-12 h-[4.25rem] rounded-r-lg flex-shrink-0 relative overflow-hidden shadow-book flex border-l-[3px] border-white/25" style="background: ${gradient}">
+                <div class="flex-grow flex flex-col justify-between p-4 relative overflow-hidden" style="background: ${gradient}">
+                    <div class="absolute inset-0 opacity-[0.03]" style="background-image: url('data:image/svg+xml,%3Csvg width=20 height=20 viewBox=%220 0 20 20%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cg fill=%22%23ffffff%22 fill-opacity=%221%22 fill-rule=%22evenodd%22%3E%3Ccircle cx=%223%22 cy=%223%22 r=%221%22/%3E%3Ccircle cx=%2213%22 cy=%2213%22 r=%221%22/%3E%3C/g%3E%3C/svg%3E');"></div>
+                    <div class="flex flex-col space-y-1 relative z-10">
+                        <span class="text-[7px] text-white/60 font-bold uppercase tracking-widest truncate">${author}</span>
+                    </div>
+                    <div class="px-1 text-center relative z-10">
+                        <h4 class="font-serif font-black text-[11px] leading-tight text-white/90 drop-shadow-md">${title}</h4>
+                    </div>
+                    <div class="relative z-10">${renderCoverProgressBar(progress)}</div>
+                </div>
+            `;
+        }
+
+        function renderImageCoverFace(book, coverImage, compact = false) {
+            const progress = Math.round(book.progress || 0);
+            const overlay = compact
+                ? `<div class="absolute inset-x-1 bottom-1 z-10">${renderCoverProgressBar(progress, true)}</div>`
+                : `
+                    <div class="absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/55 to-transparent pointer-events-none z-10"></div>
+                    <div class="absolute inset-x-3 bottom-3 z-10">${renderCoverProgressBar(progress)}</div>
+                `;
+            return `
+                <div class="flex-grow relative overflow-hidden bg-zinc-200">
+                    <img src="${coverImage}" alt="" class="absolute inset-0 w-full h-full object-cover" loading="lazy" decoding="async">
+                    ${overlay}
+                </div>
+            `;
+        }
+
+        function generateBookCoverThumbHTML(book) {
+            const coverImage = getBookCoverImage(book);
+            const face = coverImage
+                ? renderImageCoverFace(book, coverImage, true)
+                : renderGradientCoverFace(book, true);
+
+            return `
+                <div class="w-12 h-[4.25rem] rounded-r-lg flex-shrink-0 relative overflow-hidden shadow-book flex border-l-[3px] border-white/25">
                     <div class="w-1.5 bg-white/10 shrink-0 flex flex-col justify-between py-1">
                         <div class="w-full h-px bg-white/10"></div>
                         <div class="w-full h-px bg-white/10"></div>
                     </div>
-                    <div class="flex-grow flex flex-col justify-between p-1.5 relative overflow-hidden min-w-0">
-                        <span class="text-[5px] text-white/55 font-bold truncate leading-none">${author}</span>
-                        <span class="text-[7px] text-white/95 font-black text-center leading-tight line-clamp-3 px-0.5 drop-shadow-sm">${title}</span>
-                        <div class="h-0.5 bg-white/15 rounded-full overflow-hidden">
-                            <div class="bg-indigo-400/90 h-full" style="width: ${progress}%"></div>
-                        </div>
-                    </div>
+                    ${face}
                 </div>
             `;
         }
 
         function generateBookCoverHTML(book) {
-            const styleGradient = getBookCoverGradient(book);
-            
-            // 升级：实体书视觉重构 (添加厚度、阴影与页边视觉)
+            const coverImage = getBookCoverImage(book);
+            const face = coverImage
+                ? renderImageCoverFace(book, coverImage, false)
+                : renderGradientCoverFace(book, false);
+
             return `
                 <div class="group relative w-full aspect-[2/3] perspective-1000 cursor-pointer transform transition-all duration-300 hover:-translate-y-2">
-                    <!-- Book Shadow -->
                     <div class="absolute inset-0 bg-black/20 rounded-r-lg blur-lg transform translate-x-2 group-hover:translate-x-4 transition-transform opacity-0 group-hover:opacity-100"></div>
-
-                    <!-- Book Content -->
                     <div class="relative w-full h-full bg-white rounded-r-lg border-l-4 border-zinc-100 shadow-[0_5px_15px_rgba(0,0,0,0.1)] overflow-hidden flex transition-all duration-500 group-hover:shadow-[0_15px_30px_rgba(0,0,0,0.2)]">
-                        
-                        <!-- Page Edge Simulation -->
                         <div class="w-2.5 bg-zinc-50 border-r border-zinc-200/50 flex flex-col justify-between py-2">
                              <div class="w-full h-1 bg-zinc-200/50"></div>
                              <div class="w-full h-1 bg-zinc-200/50"></div>
                         </div>
-
-                        <!-- Cover Content -->
-                        <div class="flex-grow flex flex-col justify-between p-4 relative overflow-hidden" style="background: ${styleGradient}">
-                            <div class="absolute inset-0 opacity-[0.03]" style="background-image: url('data:image/svg+xml,%3Csvg width=20 height=20 viewBox=%220 0 20 20%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cg fill=%22%23ffffff%22 fill-opacity=%221%22 fill-rule=%22evenodd%22%3E%3Ccircle cx=%223%22 cy=%223%22 r=%221%22/%3E%3Ccircle cx=%2213%22 cy=%2213%22 r=%221%22/%3E%3C/g%3E%3C/svg%3E');"></div>
-                            
-                            <div class="flex flex-col space-y-1">
-                                <span class="text-[7px] text-white/60 font-bold uppercase tracking-widest truncate">${book.author}</span>
-                            </div>
-
-                            <div class="px-1 text-center">
-                                <h4 class="font-serif font-black text-[11px] leading-tight text-white/90 drop-shadow-md">
-                                    ${book.title}
-                                </h4>
-                            </div>
-
-                            <div class="h-1 bg-white/10 w-full rounded-full overflow-hidden mt-1">
-                                <div class="bg-indigo-400/80 h-full transition-all duration-500" style="width: ${Math.round(book.progress || 0)}%"></div>
-                            </div>
-                        </div>
+                        ${face}
                     </div>
                 </div>
             `;
@@ -1086,6 +1254,9 @@
         }
 
         async function initApp() {
+            if (appInitialized) return;
+            appInitialized = true;
+
             updateAppOriginHints();
             if (location.protocol === 'file:') {
                 showToast(`请运行 npm start，并访问 ${getAppAccessUrl()} 以保留书架数据`);
@@ -1160,6 +1331,7 @@
         const LIBRARY_STORE = 'snapshots';
         const LIBRARY_BACKUP_KEYS = [`${appId}_db_backup_a`, `${appId}_db_backup_b`];
         let libraryBackupRotate = 0;
+        let bookCovers = {};
 
         function normalizeDbShape() {
             if (!db.books) db.books = [];
@@ -1223,6 +1395,7 @@
                     return {
                         db: payload,
                         readerConfig: parsed?.readerConfig || null,
+                        bookCovers: parsed?.bookCovers || null,
                         savedAt: parsed?.savedAt || 0,
                         sourceKey
                     };
@@ -1255,7 +1428,8 @@
         }
 
         function syncLibraryBackupsToCurrent() {
-            const snapshot = { db, readerConfig, version: 1, savedAt: Date.now() };
+            hydrateBookCovers();
+            const snapshot = { db, readerConfig, bookCovers, version: 2, savedAt: Date.now() };
             LIBRARY_BACKUP_KEYS.forEach((key) => {
                 try {
                     localStorage.setItem(key, JSON.stringify(snapshot));
@@ -1319,6 +1493,10 @@
 
             db = best.db;
             normalizeDbShape();
+            if (best.bookCovers) {
+                bookCovers = best.bookCovers;
+            }
+            hydrateBookCovers();
             if (best.readerConfig) {
                 readerConfig = { ...readerConfig, ...best.readerConfig };
             }
@@ -1350,6 +1528,10 @@
                     normalizeDbShape();
                     hadSavedData = true;
                 }
+                if (idbSnapshot?.bookCovers) {
+                    bookCovers = idbSnapshot.bookCovers;
+                }
+                hydrateBookCovers();
                 if (idbSnapshot?.readerConfig) {
                     readerConfig = { ...readerConfig, ...idbSnapshot.readerConfig };
                 }
@@ -1391,10 +1573,12 @@
         }
 
         async function persistLibraryData(options = {}) {
+            hydrateBookCovers();
             const snapshot = {
                 db,
                 readerConfig,
-                version: 1,
+                bookCovers,
+                version: 2,
                 savedAt: Date.now()
             };
 
@@ -1688,44 +1872,51 @@
                     reader.readAsText(file, 'UTF-8');
                 } else if (ext === 'pdf') {
                     const reader = new FileReader();
-                    reader.onload = function(e) {
+                    reader.onload = async function(e) {
                         const typedarray = new Uint8Array(e.target.result);
-                        pdfjsLib.getDocument(typedarray).promise.then(pdf => {
-                            let totalPages = pdf.numPages;
+                        try {
+                            const pdf = await pdfjsLib.getDocument(typedarray).promise;
+                            const totalPages = pdf.numPages;
                             let extractedText = '';
                             let count = 0;
                             showToast(`正在提取 PDF 文字 (${totalPages} 页)...`);
+                            const coverImage = await extractPdfCover(pdf).catch(() => null);
 
                             for (let i = 1; i <= totalPages; i++) {
-                                pdf.getPage(i).then(page => {
-                                    page.getTextContent().then(textContent => {
-                                        const pageText = textContent.items.map(item => item.str).join(' ');
-                                        extractedText += `\n\n第 ${page.pageNumber} 页\n\n` + pageText;
-                                        count++;
-                                        if (count === totalPages) {
-                                            addBookToShelf(baseName, 'PDF 文献', extractedText);
-                                        }
-                                    });
-                                });
+                                const page = await pdf.getPage(i);
+                                const textContent = await page.getTextContent();
+                                const pageText = textContent.items.map(item => item.str).join(' ');
+                                extractedText += `\n\n第 ${page.pageNumber} 页\n\n` + pageText;
+                                count++;
                             }
-                        }).catch(err => {
+
+                            if (count === totalPages) {
+                                addBookToShelf(baseName, 'PDF 文献', extractedText, coverImage);
+                            }
+                        } catch (err) {
                             console.error(err);
                             showToast('PDF 提取失败，请检查文件格式');
-                        });
+                        }
                     };
                     reader.readAsArrayBuffer(file);
                 } else if (ext === 'epub') {
-                    const epubText = await parseEpubToText(file);
-                    addBookToShelf(baseName, 'EPUB 经典', epubText);
+                    showToast('正在解析 EPUB 并提取封面...');
+                    const epubBook = await parseEpubBook(file);
+                    addBookToShelf(
+                        epubBook.title || baseName,
+                        epubBook.author || 'EPUB 经典',
+                        epubBook.text,
+                        epubBook.coverImage
+                    );
                 } else if (KINDLE_EXTENSIONS.has(ext)) {
                     showToast('正在解析 Kindle / MOBI 电子书...');
                     await ensureKindleParser();
-                    const { title, author, text } = await window.parseKindleToText(file);
+                    const { title, author, text, coverImage } = await window.parseKindleToText(file);
                     if (!text) {
                         showToast('未能从该 Kindle 文件中提取正文');
                         return;
                     }
-                    addBookToShelf(title || baseName, author, text);
+                    addBookToShelf(title || baseName, author, text, coverImage);
                 }
             } catch (err) {
                 console.error(err);
@@ -1737,65 +1928,384 @@
             }
         }
 
-        async function parseEpubToText(file) {
+        function getOpfMetaValue(opfDoc, name) {
+            const dcNs = 'http://purl.org/dc/elements/1.1/';
+            const dcItems = opfDoc.getElementsByTagNameNS(dcNs, name);
+            if (dcItems.length) return dcItems[0].textContent.trim();
+            const fallback = opfDoc.querySelector(`metadata ${name}, metadata dc\\:${name}`);
+            return fallback?.textContent?.trim() || '';
+        }
+
+        function normalizeZipPath(path) {
+            return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        }
+
+        function resolveManifestHref(opfDir, href) {
+            if (!href) return '';
+            const cleanHref = href.split('#')[0].trim();
+            if (!cleanHref || /^(https?:|data:)/i.test(cleanHref)) return '';
+
+            const baseParts = normalizeZipPath(opfDir).split('/').filter(Boolean);
+            const hrefParts = normalizeZipPath(cleanHref).split('/').filter(Boolean);
+            const stack = [...baseParts];
+            hrefParts.forEach((part) => {
+                if (part === '..') stack.pop();
+                else if (part !== '.') stack.push(part);
+            });
+            return stack.join('/');
+        }
+
+        function findZipEntry(zip, ...candidates) {
+            const tried = new Set();
+            for (const raw of candidates) {
+                if (!raw) continue;
+                const variants = [raw, normalizeZipPath(raw)];
+                try { variants.push(normalizeZipPath(decodeURIComponent(raw))); } catch {}
+                for (const path of variants) {
+                    if (!path || tried.has(path)) continue;
+                    tried.add(path);
+                    const entry = zip.file(path);
+                    if (entry && !entry.dir) return entry;
+                }
+            }
+
+            const basename = normalizeZipPath(candidates.find(Boolean) || '').split('/').pop();
+            if (!basename) return null;
+            const lowerBase = basename.toLowerCase();
+            let match = null;
+            Object.keys(zip.files).forEach((name) => {
+                const entry = zip.files[name];
+                if (entry.dir) return;
+                const lowerName = name.toLowerCase();
+                if (lowerName === lowerBase || lowerName.endsWith(`/${lowerBase}`)) {
+                    if (!match || name.length < match.name.length) match = entry;
+                }
+            });
+            return match;
+        }
+
+        function xmlElements(doc, localName) {
+            const opfNs = 'http://www.idpf.org/2007/opf';
+            const nsItems = doc.getElementsByTagNameNS(opfNs, localName);
+            if (nsItems.length) return Array.from(nsItems);
+            const plain = doc.getElementsByTagName(localName);
+            if (plain.length) return Array.from(plain);
+            return Array.from(doc.getElementsByTagName('*')).filter((el) => el.localName === localName);
+        }
+
+        function getContainerOpfPath(containerDoc) {
+            const containerNs = 'urn:oasis:names:tc:opendocument:xmlns:container';
+            let rootfiles = containerDoc.getElementsByTagNameNS(containerNs, 'rootfile');
+            if (!rootfiles.length) rootfiles = containerDoc.getElementsByTagName('rootfile');
+            if (!rootfiles.length) {
+                rootfiles = Array.from(containerDoc.getElementsByTagName('*'))
+                    .filter((el) => el.localName === 'rootfile');
+            }
+            for (let i = 0; i < rootfiles.length; i++) {
+                const path = rootfiles[i].getAttribute('full-path');
+                const media = (rootfiles[i].getAttribute('media-type') || '').toLowerCase();
+                if (path && (media.includes('opf') || media.includes('oebps') || !media)) {
+                    return path;
+                }
+            }
+            return rootfiles[0]?.getAttribute('full-path') || '';
+        }
+
+        function getOpfMetaByName(opfDoc, name) {
+            return xmlElements(opfDoc, 'meta')
+                .find((node) => node.getAttribute('name') === name)
+                ?.getAttribute('content') || '';
+        }
+
+        function buildEpubManifest(opfDoc) {
+            const manifest = {};
+            xmlElements(opfDoc, 'item').forEach((item) => {
+                const id = item.getAttribute('id');
+                const href = item.getAttribute('href');
+                if (!id || !href) return;
+                manifest[id] = {
+                    href,
+                    mediaType: (item.getAttribute('media-type') || '').toLowerCase(),
+                    properties: (item.getAttribute('properties') || '').split(/\s+/).filter(Boolean)
+                };
+            });
+            return manifest;
+        }
+
+        function buildEpubSpine(opfDoc) {
+            return xmlElements(opfDoc, 'itemref')
+                .map((ref) => ref.getAttribute('idref'))
+                .filter(Boolean);
+        }
+
+        function manifestHref(manifest, id) {
+            const entry = manifest[id];
+            return typeof entry === 'string' ? entry : entry?.href || '';
+        }
+
+        function collectEpubCoverHrefs(opfDoc, manifest) {
+            const hrefs = [];
+            const push = (href) => {
+                if (href && !hrefs.includes(href)) hrefs.push(href);
+            };
+
+            const coverMetaId = getOpfMetaByName(opfDoc, 'cover');
+            if (coverMetaId) push(manifestHref(manifest, coverMetaId));
+
+            xmlElements(opfDoc, 'item').forEach((item) => {
+                const props = (item.getAttribute('properties') || '').split(/\s+/);
+                if (props.includes('cover-image')) push(item.getAttribute('href'));
+                const id = item.getAttribute('id') || '';
+                const href = item.getAttribute('href') || '';
+                if (/cover/i.test(id) || /cover/i.test(href)) push(href);
+                const mediaType = (item.getAttribute('media-type') || '').toLowerCase();
+                if (mediaType.startsWith('image/') && /cover/i.test(`${id} ${href}`)) push(href);
+            });
+
+            xmlElements(opfDoc, 'link').forEach((link) => {
+                const rel = (link.getAttribute('rel') || '').toLowerCase();
+                if (rel === 'cover' || rel.includes('cover-image')) {
+                    push(link.getAttribute('href'));
+                }
+            });
+
+            xmlElements(opfDoc, 'reference').forEach((ref) => {
+                const type = ref.getAttribute('type') || '';
+                if (type === 'cover' || type.includes('cover')) {
+                    push(ref.getAttribute('href')?.split('#')[0]);
+                }
+            });
+
+            xmlElements(opfDoc, 'item').forEach((item) => {
+                const mediaType = (item.getAttribute('media-type') || '').toLowerCase();
+                if (mediaType.startsWith('image/')) push(item.getAttribute('href'));
+            });
+
+            return hrefs;
+        }
+
+        function guessImageMime(path) {
+            const ext = String(path).split('.').pop()?.toLowerCase() || '';
+            return ({
+                jpg: 'image/jpeg',
+                jpeg: 'image/jpeg',
+                png: 'image/png',
+                gif: 'image/gif',
+                webp: 'image/webp',
+                bmp: 'image/bmp',
+                svg: 'image/svg+xml'
+            })[ext] || 'application/octet-stream';
+        }
+
+        async function blobFromZipEntry(entry) {
+            const bytes = await entry.async('uint8array');
+            return new Blob([bytes], { type: guessImageMime(entry.name) });
+        }
+
+        async function scanZipForCoverImage(zip) {
+            const imagePattern = /\.(jpe?g|png|gif|webp|bmp)$/i;
+            const candidates = [];
+            zip.forEach((relativePath, entry) => {
+                if (entry.dir || !imagePattern.test(relativePath)) return;
+                const lower = relativePath.toLowerCase();
+                let score = 10;
+                if (/cover/.test(lower)) score = 0;
+                else if (/title|front|jacket/.test(lower)) score = 2;
+                else if (/thumb|icon|avatar|logo|spine/.test(lower)) score = 8;
+                candidates.push({ path: relativePath, score });
+            });
+            candidates.sort((a, b) => a.score - b.score || a.path.length - b.path.length);
+            for (const candidate of candidates.slice(0, 8)) {
+                try {
+                    const entry = zip.file(candidate.path);
+                    if (!entry) continue;
+                    const blob = await blobFromZipEntry(entry);
+                    const dataUrl = await window.blobToCoverDataUrl(blob);
+                    if (dataUrl) return dataUrl;
+                } catch (err) {
+                    console.warn('ZIP 封面扫描失败:', candidate.path, err);
+                }
+            }
+            return null;
+        }
+
+        async function loadCoverBlobFromZip(zip, opfDir, href, depth = 0) {
+            if (!href || depth > 3) return null;
+
+            const entry = findZipEntry(
+                zip,
+                resolveManifestHref(opfDir, href),
+                normalizeZipPath(opfDir + href),
+                href
+            );
+            if (!entry) return null;
+
+            const lowerName = entry.name.toLowerCase();
+            if (lowerName.endsWith('.xhtml') || lowerName.endsWith('.html') || lowerName.endsWith('.htm')) {
+                const html = await entry.async('text');
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const img = doc.querySelector('img[src], image[href], image[xlink\\:href]');
+                if (!img) return null;
+                const imgSrc = img.getAttribute('src')
+                    || img.getAttribute('href')
+                    || img.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+                if (!imgSrc) return null;
+                const docDir = entry.name.includes('/')
+                    ? entry.name.slice(0, entry.name.lastIndexOf('/') + 1)
+                    : opfDir;
+                return loadCoverBlobFromZip(zip, docDir, imgSrc, depth + 1);
+            }
+
+            return blobFromZipEntry(entry);
+        }
+
+        async function extractCoverFromSpineHtml(zip, opfDir, manifest, spine) {
+            for (const idref of spine.slice(0, 4)) {
+                const href = manifestHref(manifest, idref);
+                if (!href) continue;
+                try {
+                    const blob = await loadCoverBlobFromZip(zip, opfDir, href);
+                    if (!blob || !blob.size) continue;
+                    const dataUrl = await window.blobToCoverDataUrl(blob);
+                    if (dataUrl) return dataUrl;
+                } catch (err) {
+                    console.warn('EPUB 卷首封面提取失败:', href, err);
+                }
+            }
+            return null;
+        }
+
+        let epubCoverModulePromise = null;
+
+        function loadEpubCoverModule() {
+            if (!epubCoverModulePromise) {
+                epubCoverModulePromise = import('/vendor/extract-epub-cover.js?v=16').catch((err) => {
+                    epubCoverModulePromise = null;
+                    throw err;
+                });
+            }
+            return epubCoverModulePromise;
+        }
+
+        async function extractEpubCoverWithFoliate(file) {
+            if (!globalThis.JSZip) return null;
+            try {
+                const { extractEpubCoverBlob } = await loadEpubCoverModule();
+                const coverBlob = await extractEpubCoverBlob(file);
+                if (!coverBlob || !coverBlob.size) return null;
+                const type = (coverBlob.type || '').toLowerCase();
+                if (type && !type.startsWith('image/')) return null;
+                return await window.blobToCoverDataUrl(coverBlob);
+            } catch (err) {
+                console.warn('foliate 封面提取失败', err);
+                return null;
+            }
+        }
+
+        async function extractEpubCover(zip, opfDoc, opfDir, manifest, spine = []) {
+            const hrefs = collectEpubCoverHrefs(opfDoc, manifest);
+            for (const href of hrefs) {
+                try {
+                    const blob = await loadCoverBlobFromZip(zip, opfDir, href);
+                    if (!blob || !blob.size) continue;
+                    const dataUrl = await window.blobToCoverDataUrl(blob);
+                    if (dataUrl) return dataUrl;
+                } catch (err) {
+                    console.warn('EPUB 封面候选失败:', href, err);
+                }
+            }
+
+            const spineCover = await extractCoverFromSpineHtml(zip, opfDir, manifest, spine);
+            if (spineCover) return spineCover;
+
+            return scanZipForCoverImage(zip);
+        }
+
+        async function extractPdfCover(pdf) {
+            const page = await pdf.getPage(1);
+            const viewport = page.getViewport({ scale: 0.6 });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(viewport.width));
+            canvas.height = Math.max(1, Math.round(viewport.height));
+            await page.render({
+                canvasContext: canvas.getContext('2d'),
+                viewport
+            }).promise;
+            return canvas.toDataURL('image/jpeg', 0.82);
+        }
+
+        async function parseEpubBook(file) {
             const zip = await JSZip.loadAsync(file);
             const parser = new DOMParser();
 
-            const containerXml = await zip.file("META-INF/container.xml").async("text");
-            const containerDoc = parser.parseFromString(containerXml, "text/xml");
-            const opfPath = containerDoc.querySelector("rootfile").getAttribute("full-path");
-            const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
+            const containerEntry = findZipEntry(zip, 'META-INF/container.xml', 'meta-inf/container.xml');
+            if (!containerEntry) throw new Error('EPUB container.xml 缺失');
+            const containerDoc = parser.parseFromString(await containerEntry.async('text'), 'text/xml');
+            const opfPath = getContainerOpfPath(containerDoc);
+            if (!opfPath) throw new Error('EPUB OPF 路径缺失');
 
-            const opfXml = await zip.file(opfPath).async("text");
-            const opfDoc = parser.parseFromString(opfXml, "text/xml");
+            const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : '';
+            const opfEntry = findZipEntry(zip, opfPath, normalizeZipPath(opfPath));
+            if (!opfEntry) throw new Error('EPUB OPF 文件缺失');
+            const opfDoc = parser.parseFromString(await opfEntry.async('text'), 'text/xml');
 
-            const manifest = {};
-            const items = opfDoc.querySelectorAll("manifest > item");
-            items.forEach(item => {
-                manifest[item.getAttribute("id")] = item.getAttribute("href");
-            });
+            const manifest = buildEpubManifest(opfDoc);
+            const spine = buildEpubSpine(opfDoc);
 
-            const spine = [];
-            const spineItems = opfDoc.querySelectorAll("spine > itemref");
-            spineItems.forEach(itemref => {
-                spine.push(itemref.getAttribute("idref"));
-            });
+            const title = getOpfMetaValue(opfDoc, 'title');
+            const author = getOpfMetaValue(opfDoc, 'creator');
+            let coverImage = null;
+            try {
+                coverImage = await extractEpubCoverWithFoliate(file);
+                if (!coverImage) {
+                    coverImage = await extractEpubCover(zip, opfDoc, opfDir, manifest, spine);
+                }
+            } catch (coverErr) {
+                console.warn('EPUB 封面提取失败', coverErr);
+            }
 
             let fullText = "";
             showToast("正在解析 EPUB 章节...");
 
-            for (let idref of spine) {
-                const relativeHref = manifest[idref];
+            for (const idref of spine) {
+                const relativeHref = manifestHref(manifest, idref);
                 if (!relativeHref) continue;
 
-                const href = decodeURIComponent(opfDir + relativeHref);
-                const chapterFile = zip.file(href);
+                const href = resolveManifestHref(opfDir, relativeHref);
+                const chapterFile = findZipEntry(zip, href, relativeHref, normalizeZipPath(opfDir + relativeHref));
                 if (!chapterFile) continue;
 
                 const htmlText = await chapterFile.async("text");
                 const htmlDoc = parser.parseFromString(htmlText, "text/html");
 
-                const elements = htmlDoc.querySelectorAll("h1, h2, h3, h4, p");
-                elements.forEach(el => {
-                    let txt = el.textContent.trim();
-                    if (txt.length > 0) {
-                        if (el.tagName.startsWith('H')) {
+                let fileChapterMarked = false;
+                htmlDoc.querySelectorAll("h1, h2, h3, h4, p").forEach(el => {
+                    const txt = el.textContent.trim();
+                    if (!txt.length) return;
+                    if (el.tagName.startsWith('H')) {
+                        const isChapterHeading = el.tagName === 'H1' || (!fileChapterMarked && el.tagName === 'H2');
+                        if (isChapterHeading) {
+                            fileChapterMarked = true;
                             fullText += `\n\n第[章节] ${txt}\n\n`;
                         } else {
-                            fullText += `${txt}\n\n`;
+                            fullText += `\n\n${txt}\n\n`;
                         }
+                    } else {
+                        fullText += `${txt}\n\n`;
                     }
                 });
             }
-            return fullText;
+
+            return { text: fullText, title, author, coverImage };
         }
 
-        async function addBookToShelf(title, author, content) {
+        async function addBookToShelf(title, author, content, coverImage = null) {
             const newBook = {
                 id: 'book_' + Date.now(),
                 title: title,
                 author: author || '思考者',
                 coverBg: '',
+                coverImage: null,
                 progress: 0,
                 lastReadPara: 0,
                 dateAdded: new Date().toISOString(),
@@ -1803,10 +2313,12 @@
             };
 
             db.books.unshift(newBook);
+            if (coverImage) setBookCoverImage(newBook.id, coverImage);
             try {
                 await saveToLocalStorage();
                 renderBookshelf();
-                showToast(`《${title}》已加入书架`);
+                const coverHint = getBookCoverImage(newBook) ? '（已提取封面）' : '';
+                showToast(`《${title}》已加入书架${coverHint}`);
             } catch (e) {
                 db.books = db.books.filter(b => b.id !== newBook.id);
                 renderBookshelf();
@@ -1845,6 +2357,7 @@
             db.history = db.history.filter(h => h.bookId !== bookId);
             if (db.notes[bookId]) delete db.notes[bookId];
             if (db.stats.bookToday[bookId]) delete db.stats.bookToday[bookId];
+            if (bookCovers[bookId]) delete bookCovers[bookId];
 
             try {
                 await saveToLocalStorage();
@@ -1970,6 +2483,16 @@
             safeCreateIcons();
         }
 
+        function getChapterTitleAtPara(book, paraIndex) {
+            if (!book?.content) return '正文';
+            const paras = book.content.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+            let chapter = '正文';
+            for (let i = 0; i <= paraIndex && i < paras.length; i++) {
+                if (isChapterPara(paras[i])) chapter = formatChapterTitle(paras[i]);
+            }
+            return chapter;
+        }
+
         function updateRecentCard() {
             const card = document.getElementById('recent-read-card');
             if (db.history.length > 0) {
@@ -1980,7 +2503,9 @@
                     const titleEl = document.getElementById('recent-title');
                     titleEl.innerText = book.title;
                     titleEl.title = book.title;
-                    document.getElementById('recent-info').innerText = `已阅至第 ${latestHistory.paraIndex + 1} 段 · 思考度 ${Math.round(book.progress || 0)}%`;
+                    const resumePara = book.lastReadPara != null ? book.lastReadPara : latestHistory.paraIndex;
+                    const chapter = getChapterTitleAtPara(book, resumePara);
+                    document.getElementById('recent-info').innerText = `续读：${chapter} · 进度 ${Math.round(book.progress || 0)}%`;
                     document.getElementById('recent-progress-bar').style.width = `${book.progress || 0}%`;
                     return;
                 }
@@ -1990,9 +2515,127 @@
 
         function openRecentBook() {
             if (db.history.length > 0) {
-                const book = db.books.find(b => b.id === db.history[0].bookId);
-                if (book) openReader(book);
+                const latest = db.history[0];
+                const book = db.books.find(b => b.id === latest.bookId);
+                if (book) openReader(book, latest.paraIndex);
             }
+        }
+
+        function resolveStartParaIndex(book, startParaIndex) {
+            if (startParaIndex != null) return startParaIndex;
+            if (book.lastReadPara != null && book.lastReadPara >= 0) return book.lastReadPara;
+            const hist = db.history.find(h => h.bookId === book.id);
+            if (hist && hist.paraIndex >= 0) return hist.paraIndex;
+            return 0;
+        }
+
+        function getCurrentChapterParaIndex() {
+            let chapterIdx = -1;
+            for (let i = 0; i <= currentParaIndex && i < currentParagraphs.length; i++) {
+                if (isChapterPara(currentParagraphs[i])) chapterIdx = i;
+            }
+            return chapterIdx;
+        }
+
+        function getParaIndexFromScrollViewport() {
+            const viewport = document.getElementById('reader-viewport');
+            if (!viewport || !currentParagraphs.length) return currentParaIndex;
+
+            const paras = document.getElementById('reader-content')?.children;
+            if (!paras?.length) return currentParaIndex;
+
+            const middleY = viewport.clientHeight / 2;
+            let closestIdx = currentParaIndex;
+            let closestDiff = Infinity;
+
+            for (let i = 0; i < paras.length; i++) {
+                const rect = paras[i].getBoundingClientRect();
+                const diff = Math.abs(rect.top + rect.height / 2 - middleY);
+                if (diff < closestDiff) {
+                    closestDiff = diff;
+                    const paraIdx = parseInt(paras[i].getAttribute('data-para-idx'), 10);
+                    closestIdx = Number.isFinite(paraIdx) ? paraIdx : i;
+                }
+            }
+            return closestIdx;
+        }
+
+        function getActivePageIndexFromViewport() {
+            if (!pagedLayout.length) return currentPageIndex;
+
+            const viewport = document.getElementById('reader-viewport');
+            const pages = document.querySelectorAll('#reader-content .paged-page');
+            if (!viewport || !pages.length) return currentPageIndex;
+
+            const viewportRect = viewport.getBoundingClientRect();
+            let bestIdx = currentPageIndex;
+            let bestOverlap = -1;
+
+            for (let i = 0; i < pages.length; i++) {
+                const rect = pages[i].getBoundingClientRect();
+                const overlapLeft = Math.max(rect.left, viewportRect.left);
+                const overlapRight = Math.min(rect.right, viewportRect.right);
+                const overlap = Math.max(0, overlapRight - overlapLeft);
+                if (overlap > bestOverlap) {
+                    bestOverlap = overlap;
+                    bestIdx = i;
+                }
+            }
+
+            return Math.max(0, Math.min(pagedLayout.length - 1, bestIdx));
+        }
+
+        function getParaIndexFromPagedViewport() {
+            if (!pagedLayout.length) return currentParaIndex;
+
+            const pageIdx = getActivePageIndexFromViewport();
+            currentPageIndex = pageIdx;
+            const page = pagedLayout[pageIdx];
+            if (!page?.blocks?.length) return currentParaIndex;
+            return Math.max(...page.blocks.map((block) => block.paraIdx));
+        }
+
+        function syncReadingPositionFromViewport() {
+            if (!currentBook || currentParagraphs.length === 0) return;
+            if (Date.now() < readerJumpLockUntil) return;
+            if (speechIsPlaying) return;
+
+            if (readerConfig.mode === 'paged') {
+                currentParaIndex = getParaIndexFromPagedViewport();
+            } else {
+                currentParaIndex = getParaIndexFromScrollViewport();
+            }
+        }
+
+        function computeReadingProgressPercent(paraIdx = currentParaIndex) {
+            if (readerConfig.mode === 'paged' && pagedLayout.length > 1) {
+                const pageIdx = Math.max(0, Math.min(pagedLayout.length - 1, currentPageIndex));
+                return (pageIdx / (pagedLayout.length - 1)) * 100;
+            }
+            return (paraIdx / Math.max(1, currentParagraphs.length - 1)) * 100;
+        }
+
+        function persistReadingPosition(options = {}) {
+            if (!currentBook || currentParagraphs.length === 0) return;
+
+            if (options.syncFromViewport !== false) {
+                syncReadingPositionFromViewport();
+            }
+
+            currentBook.lastReadPara = currentParaIndex;
+            currentBook.progress = Math.min(100, Math.max(0, computeReadingProgressPercent()));
+
+            const hist = db.history.find(h => h.bookId === currentBook.id);
+            if (hist) {
+                hist.paraIndex = currentParaIndex;
+                hist.timestamp = new Date().toISOString();
+            } else {
+                addToHistory(currentBook.id, currentParaIndex);
+                return;
+            }
+
+            clearTimeout(readingPositionSaveTimer);
+            readingPositionSaveTimer = setTimeout(() => saveToLocalStorage().catch(() => {}), 400);
         }
 
         function renderHistory() {
@@ -2016,7 +2659,8 @@
 
                 const row = document.createElement('div');
                 row.className = "bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800/80 py-5 px-5 rounded-3xl flex items-center justify-between gap-4 cursor-pointer active:scale-[0.99] transition-transform shadow-premium";
-                row.onclick = () => openReader(book, item.paraIndex);
+                const resumePara = book.lastReadPara != null ? book.lastReadPara : item.paraIndex;
+                row.onclick = () => openReader(book, resumePara);
 
                 const readTime = new Date(item.timestamp).toLocaleString();
 
@@ -2025,7 +2669,7 @@
                         ${generateBookCoverThumbHTML(book)}
                         <div class="overflow-hidden min-w-0 flex-1 space-y-1.5 py-0.5">
                             <h4 class="font-extrabold text-sm text-zinc-800 dark:text-zinc-100 truncate leading-snug">${escapeHtml(book.title)}</h4>
-                            <p class="text-[11px] text-zinc-400 font-bold leading-relaxed">读至第 ${item.paraIndex + 1} 段 · 进度 ${Math.round(book.progress || 0)}%</p>
+                            <p class="text-[11px] text-zinc-400 font-bold leading-relaxed">读至第 ${resumePara + 1} 段 · 进度 ${Math.round(book.progress || 0)}%</p>
                             <span class="text-[10px] text-zinc-400/90 font-medium block leading-relaxed">${readTime}</span>
                         </div>
                     </div>
@@ -2047,13 +2691,7 @@
                 .map(p => p.trim())
                 .filter(p => p.length > 0);
 
-            if (startParaIndex !== null) {
-                currentParaIndex = startParaIndex;
-            } else if (book.lastReadPara) {
-                currentParaIndex = book.lastReadPara;
-            } else {
-                currentParaIndex = 0;
-            }
+            currentParaIndex = resolveStartParaIndex(book, startParaIndex);
 
             document.getElementById('reader-book-title').innerText = book.title;
             if (document.documentElement.classList.contains('dark')) {
@@ -2096,15 +2734,17 @@
 
         function closeReader() {
             if (currentBook) {
-                currentBook.lastReadPara = currentParaIndex;
-                const progress = (currentParaIndex / Math.max(1, currentParagraphs.length - 1)) * 100;
-                currentBook.progress = Math.min(100, Math.max(0, progress));
+                readerJumpLockUntil = 0;
+                persistReadingPosition({ syncFromViewport: true });
+                clearTimeout(readingPositionSaveTimer);
                 saveToLocalStorage();
             }
 
             stopSpeech();
             stopReadingTimer();
-            document.getElementById('reader-view').classList.add('hidden');
+            const readerView = document.getElementById('reader-view');
+            readerView.classList.add('hidden');
+            readerView.style.display = '';
             hideReaderChrome();
             closeCatalogPanel();
             document.getElementById('config-panel').classList.add('hidden');
@@ -2122,6 +2762,61 @@
 
         function formatChapterTitle(para) {
             return para.replace(/^第\[章节\]\s*/, '').trim();
+        }
+
+        function getChapterJumpTargetParaIndex(chapterParaIdx) {
+            if (!Number.isFinite(chapterParaIdx) || chapterParaIdx < 0) return 0;
+            for (let i = chapterParaIdx + 1; i < currentParagraphs.length; i++) {
+                if (isChapterPara(currentParagraphs[i])) break;
+                if (currentParagraphs[i]?.trim()) return i;
+            }
+            return chapterParaIdx;
+        }
+
+        function getMaxRenderedParaIdx() {
+            let max = -1;
+            document.querySelectorAll('#reader-content [data-para-idx]').forEach((el) => {
+                const idx = parseInt(el.getAttribute('data-para-idx'), 10);
+                if (Number.isFinite(idx)) max = Math.max(max, idx);
+            });
+            return max;
+        }
+
+        function ensureParagraphRendered(targetIdx) {
+            if (readerConfig.mode !== 'scroll' || !currentParagraphs.length) return;
+            const container = document.getElementById('reader-content');
+            if (!container) return;
+
+            const safeTarget = Math.min(Math.max(0, targetIdx), currentParagraphs.length - 1);
+            flushScrollRenderUntil(safeTarget);
+            if (document.querySelector(`#reader-content [data-para-idx="${safeTarget}"]`)) return;
+
+            if (activeScrollRender) {
+                scrollRenderGeneration++;
+                activeScrollRender = null;
+            }
+
+            const bookNotes = db.notes[currentBook?.id] || [];
+            const frag = document.createDocumentFragment();
+            for (let i = 0; i <= safeTarget; i++) {
+                if (!currentParagraphs[i]) continue;
+                if (document.querySelector(`#reader-content [data-para-idx="${i}"]`)) continue;
+                frag.appendChild(createScrollParagraphEl(currentParagraphs[i], i, bookNotes));
+            }
+            if (frag.childNodes.length) container.appendChild(frag);
+        }
+
+        function getReaderTopInset() {
+            const readerView = document.getElementById('reader-view');
+            const chromeVisible = readerView && !readerView.classList.contains('reader-chrome-hidden');
+            return chromeVisible ? 68 : 16;
+        }
+
+        async function jumpToChapterFromCatalog(chapterParaIdx) {
+            const targetIdx = getChapterJumpTargetParaIndex(chapterParaIdx);
+            closeCatalogPanel();
+            await settleReaderViewportFrames(3);
+            jumpToParagraph(targetIdx, { behavior: 'auto' });
         }
 
         function getReaderFontFamily() {
@@ -2165,7 +2860,7 @@
             viewport.style.paddingLeft = `${margin}px`;
             viewport.style.paddingRight = `${margin}px`;
             viewport.style.paddingTop = `${Math.round(margin * 0.45)}px`;
-            viewport.style.paddingBottom = `${Math.round(margin * 0.35)}px`;
+            viewport.style.paddingBottom = `calc(${Math.round(margin * 0.35)}px + 3rem + env(safe-area-inset-bottom, 0px))`;
         }
 
         function applyParagraphTypography(el, isChapter) {
@@ -2206,7 +2901,7 @@
             p.setAttribute('data-para-idx', idx);
             applyParagraphTypography(p, isChapter);
             if (isChapter) {
-                p.className = "font-black text-zinc-900 dark:text-white mb-2 border-l-4 border-indigo-600 pl-4 select-text shrink-0";
+                p.className = "reader-chapter-heading font-black text-zinc-900 dark:text-white mb-2 border-l-4 border-indigo-600 pl-4 select-text shrink-0";
                 p.innerText = formatChapterTitle(para);
             } else {
                 p.className = "text-justify cursor-pointer py-1 select-text shrink-0";
@@ -2383,10 +3078,130 @@
         }
 
         function getPageIndexForParagraph(paraIdx) {
+            if (!pagedLayout.length) return 0;
+            let fallbackPage = 0;
             for (let i = 0; i < pagedLayout.length; i++) {
-                if (pagedLayout[i].blocks.some(block => block.paraIdx === paraIdx)) return i;
+                const page = pagedLayout[i];
+                if (!page.blocks.some((block) => block.paraIdx === paraIdx)) continue;
+                fallbackPage = i;
+                if (page.blocks[0].paraIdx === paraIdx) return i;
             }
-            return 0;
+            return fallbackPage;
+        }
+
+        function settleReaderViewportFrames(count = 2) {
+            return new Promise((resolve) => {
+                const step = (left) => {
+                    if (left <= 0) return resolve();
+                    requestAnimationFrame(() => step(left - 1));
+                };
+                step(count);
+            });
+        }
+
+        async function ensurePagedLayoutReady() {
+            if (pagedLayout.length && document.querySelector('#reader-content .paged-page')) return true;
+
+            const content = document.getElementById('reader-content');
+            const isBuilding = content?.querySelector('p')?.textContent?.includes('正在排版');
+            if (!isBuilding && readerConfig.mode === 'paged') {
+                renderReaderContent({ restorePosition: true });
+            }
+
+            for (let i = 0; i < 180; i++) {
+                if (pagedLayout.length && document.querySelector('#reader-content .paged-page')) {
+                    return true;
+                }
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            }
+            return false;
+        }
+
+        async function waitForParagraphElement(idx, maxFrames = 480) {
+            for (let i = 0; i < maxFrames; i++) {
+                ensureParagraphRendered(idx);
+                if (document.querySelector(`#reader-content [data-para-idx="${idx}"]`)) {
+                    return true;
+                }
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            }
+            ensureParagraphRendered(idx);
+            return !!document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
+        }
+
+        function scrollPagedViewportToPage(pageIdx, preferredParaIdx = null) {
+            if (!pagedLayout.length) return false;
+
+            syncPagedPageDimensions();
+            const viewport = document.getElementById('reader-viewport');
+            const pageWidth = viewport?.clientWidth || 0;
+            const safePageIdx = Math.max(0, Math.min(pageIdx, pagedLayout.length - 1));
+
+            currentPageIndex = safePageIdx;
+            if (viewport && pageWidth > 0) {
+                viewport.scrollLeft = safePageIdx * pageWidth;
+            }
+
+            const page = pagedLayout[safePageIdx];
+            if (page?.blocks?.length) {
+                if (preferredParaIdx != null && page.blocks.some((block) => block.paraIdx === preferredParaIdx)) {
+                    currentParaIndex = preferredParaIdx;
+                } else {
+                    currentParaIndex = Math.max(...page.blocks.map((block) => block.paraIdx));
+                }
+            }
+
+            updatePagedIndicator();
+            if (!speechIsPlaying) clearParagraphHighlight();
+            return true;
+        }
+
+        function finalizePagedJump(idx, behavior = 'auto') {
+            currentParaIndex = idx;
+            const pageIdx = getPageIndexForParagraph(idx);
+            const settlePagedJump = () => scrollPagedViewportToPage(pageIdx, idx);
+            settlePagedJump();
+            requestAnimationFrame(() => {
+                syncPagedPageDimensions();
+                settlePagedJump();
+                requestAnimationFrame(settlePagedJump);
+            });
+        }
+
+        async function executeReaderJump(idx, options = {}) {
+            const behavior = options.behavior || 'auto';
+            await settleReaderViewportFrames(2);
+            currentParaIndex = idx;
+
+            if (readerConfig.mode === 'paged') {
+                const ready = await ensurePagedLayoutReady();
+                if (!ready) return false;
+                pendingJumpParaIdx = null;
+                finalizePagedJump(idx, behavior);
+            } else {
+                pendingJumpParaIdx = null;
+                ensureParagraphRendered(idx);
+                await waitForParagraphElement(idx, 480);
+                scrollToParagraph(idx, behavior);
+            }
+
+            readerJumpLockUntil = Math.max(readerJumpLockUntil, Date.now() + 3500);
+            updateSliderProgress({ syncFromViewport: false });
+            updateCatalogHighlight();
+            return true;
+        }
+
+        function jumpToParagraph(idx, options = {}) {
+            if (!Number.isFinite(idx) || idx < 0 || idx >= currentParagraphs.length) return;
+
+            currentParaIndex = idx;
+            pendingJumpParaIdx = idx;
+            readerJumpLockUntil = Date.now() + 3200;
+            const token = ++jumpToParagraphToken;
+            executeReaderJump(idx, options).then((ok) => {
+                if (token !== jumpToParagraphToken) return;
+                if (!ok) console.warn('阅读跳转未完成，目标段落:', idx);
+            });
         }
 
         function updatePagedIndicator() {
@@ -2400,13 +3215,43 @@
         function restorePagedPosition() {
             if (readerConfig.mode !== 'paged' || !pagedLayout.length) return;
             currentPageIndex = getPageIndexForParagraph(currentParaIndex);
-            scrollToPageIndex(currentPageIndex, 'auto');
+            scrollToPageIndex(currentPageIndex, 'auto', currentParaIndex);
         }
 
-        function renderReaderContent() {
+        function refreshScrollParagraphMarkup(paraIdx) {
+            const bookNotes = db.notes[currentBook?.id] || [];
+            const para = currentParagraphs[paraIdx];
+            if (!para || isChapterPara(para)) return;
+
+            flushScrollRenderUntil(paraIdx);
+            document.querySelectorAll(`#reader-content [data-para-idx="${paraIdx}"]`).forEach((el) => {
+                el.innerHTML = highlightParaText(para, paraIdx, bookNotes);
+            });
+        }
+
+        function applyReaderAnnotationChange(affectedParaIndices) {
+            if (!currentBook) return;
+            const indices = [...new Set((Array.isArray(affectedParaIndices) ? affectedParaIndices : [affectedParaIndices])
+                .filter((idx) => Number.isFinite(idx) && idx >= 0))];
+            if (!indices.length) return;
+
+            buildNotesIndex(db.notes[currentBook.id] || []);
+
+            if (readerConfig.mode === 'scroll') {
+                indices.forEach(refreshScrollParagraphMarkup);
+                return;
+            }
+
+            invalidatePagedLayoutCache();
+            renderReaderContent({ restorePosition: true, keepVisible: true });
+        }
+
+        function renderReaderContent(options = {}) {
             const container = document.getElementById('reader-content');
             scrollRenderGeneration++;
-            container.innerHTML = '';
+            if (!options.keepVisible) {
+                container.innerHTML = '';
+            }
 
             if (currentParagraphs.length === 0) {
                 container.innerHTML = `<p class="text-zinc-400 text-center font-bold">该著作无文字内容</p>`;
@@ -2430,9 +3275,14 @@
 
                 renderScrollContentChunked(container, bookNotes, () => {
                     updateSliderProgress();
-                    if (readerConfig.mode === 'scroll') {
-                        scrollToParagraph(currentParaIndex, 'auto');
+                    if (readerConfig.mode !== 'scroll') return;
+                    if (pendingJumpParaIdx != null) {
+                        const targetIdx = pendingJumpParaIdx;
+                        pendingJumpParaIdx = null;
+                        requestAnimationFrame(() => jumpToParagraph(targetIdx, { behavior: 'auto' }));
+                        return;
                     }
+                    scrollToParagraph(currentParaIndex, 'auto');
                 });
             } else {
                 document.getElementById('reader-content-spacer').classList.add('hidden');
@@ -2440,7 +3290,7 @@
                 viewport.classList.add('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
                 content.className = "leading-relaxed break-all font-serif";
                 document.getElementById('paged-index-indicator').classList.remove('hidden');
-                renderPagedContentAsync(container, bookNotes);
+                renderPagedContentAsync(container, bookNotes, options);
             }
 
             updateSliderProgress();
@@ -2478,9 +3328,12 @@
         }
 
         // 核心同步与渲染更新逻辑
-        function updateSliderProgress() {
+        function updateSliderProgress(options = {}) {
             if (!currentParagraphs || currentParagraphs.length === 0) return;
-            const pct = Math.round((currentParaIndex / Math.max(1, currentParagraphs.length - 1)) * 100);
+            if (options.syncFromViewport !== false && Date.now() >= readerJumpLockUntil) {
+                syncReadingPositionFromViewport();
+            }
+            const pct = Math.round(computeReadingProgressPercent());
             
             const percentEl = document.getElementById('reader-percent');
             if (percentEl) {
@@ -2497,7 +3350,7 @@
             for (let i = currentParaIndex; i >= 0; i--) {
                 const text = currentParagraphs[i];
                 if (text && isChapterPara(text)) {
-                    latestChapter = text.replace('[章节]', '').trim();
+                    latestChapter = formatChapterTitle(text);
                     break;
                 }
             }
@@ -2505,6 +3358,11 @@
             const chapterTitleEl = document.getElementById('reader-chapter-title');
             if (chapterTitleEl) {
                 chapterTitleEl.innerText = latestChapter;
+            }
+
+            persistReadingPosition({ syncFromViewport: options.syncFromViewport });
+            if (!document.getElementById('catalog-panel').classList.contains('hidden')) {
+                updateCatalogHighlight();
             }
         }
 
@@ -2542,7 +3400,7 @@
             applyParagraphTypography(p, isChapter);
 
             if (isChapter) {
-                p.className += " font-black text-zinc-900 dark:text-white mt-8 mb-4 border-l-4 border-indigo-600 pl-3.5";
+                p.className += " reader-chapter-heading font-black text-zinc-900 dark:text-white mt-8 mb-4 border-l-4 border-indigo-600 pl-3.5";
                 p.textContent = formatChapterTitle(para);
                 return p;
             }
@@ -2590,16 +3448,13 @@
 
         function flushScrollRenderUntil(targetIdx) {
             if (readerConfig.mode !== 'scroll' || !activeScrollRender) return;
-            const needIdx = Math.min(
-                Math.max(0, targetIdx) + SCROLL_RENDER_CHUNK,
-                currentParagraphs.length - 1
-            );
+            const safeTarget = Math.min(Math.max(0, targetIdx), currentParagraphs.length - 1);
             let guard = 0;
             while (
                 activeScrollRender
                 && activeScrollRender.generation === scrollRenderGeneration
-                && activeScrollRender.cursor <= needIdx
-                && guard++ < 500
+                && activeScrollRender.cursor <= safeTarget
+                && guard++ < 1200
             ) {
                 if (!appendOneScrollChunk(activeScrollRender)) break;
             }
@@ -2620,15 +3475,13 @@
             scheduleScrollChunkLoop(activeScrollRender);
         }
 
-        function renderPagedContentAsync(container, bookNotes) {
-            container.innerHTML = '<p class="text-zinc-400 text-center font-bold py-20">正在排版，请稍候…</p>';
-            scheduleIdleTask(() => {
-                pagedLayout = buildPagedLayout(bookNotes);
-                if (pagedLayout.length === 0) {
-                    requestAnimationFrame(() => renderReaderContent());
-                    return;
-                }
+        function renderPagedContentAsync(container, bookNotes, options = {}) {
+            const showLoading = !options.keepVisible;
+            if (showLoading) {
+                container.innerHTML = '<p class="text-zinc-400 text-center font-bold py-20">正在排版，请稍候…</p>';
+            }
 
+            const mountPagedLayout = () => {
                 container.replaceChildren();
                 const frag = document.createDocumentFragment();
                 pagedLayout.forEach((page, pageIdx) => {
@@ -2646,8 +3499,32 @@
                 currentPageIndex = getPageIndexForParagraph(currentParaIndex);
                 syncPagedPageDimensions();
                 updatePagedIndicator();
-                restorePagedPosition();
-            });
+                if (pendingJumpParaIdx != null) {
+                    const targetIdx = pendingJumpParaIdx;
+                    pendingJumpParaIdx = null;
+                    requestAnimationFrame(() => finalizePagedJump(targetIdx, 'auto'));
+                } else if (options.restorePosition !== false) {
+                    restorePagedPosition();
+                }
+            };
+
+            const attemptBuild = (retry = 0) => {
+                const viewport = document.getElementById('reader-viewport');
+                if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) {
+                    if (retry < 40) requestAnimationFrame(() => attemptBuild(retry + 1));
+                    return;
+                }
+
+                pagedLayout = buildPagedLayout(bookNotes);
+                if (!pagedLayout.length) {
+                    if (retry < 40) requestAnimationFrame(() => attemptBuild(retry + 1));
+                    return;
+                }
+
+                mountPagedLayout();
+            };
+
+            scheduleIdleTask(() => attemptBuild());
         }
 
         function highlightParaText(paraStr, paraIdx, notesList) {
@@ -2907,13 +3784,7 @@
                 );
                 if (moved) return;
 
-                const rect = viewport.getBoundingClientRect();
-                const x = e.clientX - rect.left;
-                if (x < rect.width * 0.3) {
-                    navigatePage('prev');
-                } else if (x > rect.width * 0.7) {
-                    navigatePage('next');
-                }
+                handleReaderTapNavigation(e.clientX);
             });
 
             const markPopover = document.getElementById('mark-action-popover');
@@ -2957,10 +3828,8 @@
 
             db.notes[bookId].push(newHighlight);
             saveToLocalStorage();
-            
-            invalidatePagedLayoutCache();
-            renderReaderContent();
-            restorePagedPosition();
+
+            applyReaderAnnotationChange(currentSelection.paraIndex);
             if (!document.getElementById('notes-drawer').classList.contains('hidden')) {
                 renderNotesDrawerList();
             }
@@ -3050,8 +3919,7 @@
                     note.note = noteText;
                     note.timestamp = new Date().toISOString();
                     saveToLocalStorage();
-                    renderReaderContent();
-                    restorePagedPosition();
+                    applyReaderAnnotationChange(note.paraIndex);
                     closeNoteEditor();
                     renderNotesDrawerList();
                     showToast("随笔已更新");
@@ -3103,8 +3971,7 @@
             db.notes[bookId].push(newHighlightWithNote);
             saveToLocalStorage();
 
-            renderReaderContent();
-            restorePagedPosition();
+            applyReaderAnnotationChange(currentSelection.paraIndex);
             closeNoteEditor();
             window.getSelection().removeAllRanges();
             cachedSelectionRange = null;
@@ -3124,9 +3991,9 @@
                 return !isMatch;
             });
 
+            const removedPara = currentSelection.paraIndex;
             saveToLocalStorage();
-            renderReaderContent();
-            restorePagedPosition();
+            applyReaderAnnotationChange(removedPara);
             window.getSelection().removeAllRanges();
             hideSelectionPopover();
             showToast("已成功抹去标注");
@@ -3172,13 +4039,13 @@
 
         function removeMarkById(noteId, toastMessage = '标记已取消') {
             const bookId = currentBook.id;
+            const removed = (db.notes[bookId] || []).find(n => n.id === noteId);
             db.notes[bookId] = (db.notes[bookId] || []).filter(n => n.id !== noteId);
             saveToLocalStorage();
             if (!document.getElementById('notes-drawer').classList.contains('hidden')) {
                 renderNotesDrawerList();
             }
-            renderReaderContent();
-            restorePagedPosition();
+            if (removed) applyReaderAnnotationChange(removed.paraIndex);
             hideMarkActionPopover();
             if (toastMessage) showToast(toastMessage);
         }
@@ -3282,14 +4149,10 @@
         }
 
         function jumpToParaFromNote(paraIdx) {
-            currentParaIndex = paraIdx;
             toggleNotesDrawer();
-            if (readerConfig.mode === 'scroll') {
-                scrollToParagraph(paraIdx);
-            } else {
-                scrollToPageOfParagraph(paraIdx);
-            }
-            updateSliderProgress();
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => jumpToParagraph(paraIdx, { behavior: 'auto' }));
+            });
         }
 
         // --- 触屏翻页手势机制 ---
@@ -3304,7 +4167,6 @@
             const viewport = document.getElementById('reader-viewport');
             const footer = document.getElementById('reader-footer');
             if (readerView) {
-                readerView.style.display = 'flex';
                 readerView.style.flexDirection = 'column';
                 readerView.style.overflow = 'hidden';
                 readerView.style.height = '100dvh';
@@ -3322,8 +4184,8 @@
                 viewport.style.left = '';
             }
             if (footer) {
-                footer.style.position = 'relative';
-                footer.style.flexShrink = '0';
+                footer.style.position = '';
+                footer.style.flexShrink = '';
             }
         }
 
@@ -3340,6 +4202,34 @@
 
         function toggleReaderChrome() {
             setReaderChromeVisible(!readerChromeVisible);
+        }
+
+        function getReaderTapZone(clientX) {
+            const viewport = document.getElementById('reader-viewport');
+            if (!viewport) return 'center';
+            const rect = viewport.getBoundingClientRect();
+            if (rect.width <= 0) return 'center';
+            const ratio = (clientX - rect.left) / rect.width;
+            if (ratio < 0.3) return 'left';
+            if (ratio > 0.7) return 'right';
+            return 'center';
+        }
+
+        function handleReaderTapNavigation(clientX) {
+            const zone = getReaderTapZone(clientX);
+            if (readerConfig.mode === 'paged') {
+                if (zone === 'left') {
+                    hideReaderChrome();
+                    navigatePage('prev');
+                    return true;
+                }
+                if (zone === 'right') {
+                    hideReaderChrome();
+                    navigatePage('next');
+                    return true;
+                }
+            }
+            return false;
         }
 
         function shouldIgnoreReaderTapToggle() {
@@ -3360,13 +4250,13 @@
             viewport.dataset.swipeBound = 'true';
 
             viewport.addEventListener('touchstart', (e) => {
-                touchStartX = e.touches[0].screenX;
-                touchStartY = e.touches[0].screenY;
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
             }, { passive: true });
 
             viewport.addEventListener('touchend', (e) => {
-                touchEndX = e.changedTouches[0].screenX;
-                touchEndY = e.changedTouches[0].screenY;
+                touchEndX = e.changedTouches[0].clientX;
+                touchEndY = e.changedTouches[0].clientY;
                 handleSwipeGesture();
             }, { passive: true });
 
@@ -3374,6 +4264,8 @@
                 if ('ontouchstart' in window) return;
                 if (shouldIgnoreReaderTapToggle()) return;
                 if (e.target.closest('button, input, a, span[data-note-id]')) return;
+                if (handleReaderTapNavigation(e.clientX)) return;
+                if (getReaderTapZone(e.clientX) !== 'center') return;
                 toggleReaderChrome();
             });
         }
@@ -3388,16 +4280,20 @@
 
             if (readerConfig.mode === 'paged') {
                 if (diffX < -threshold && Math.abs(diffX) > Math.abs(diffY)) {
+                    hideReaderChrome();
                     navigatePage('next');
                     return;
                 }
                 if (diffX > threshold && Math.abs(diffX) > Math.abs(diffY)) {
+                    hideReaderChrome();
                     navigatePage('prev');
                     return;
                 }
             }
 
             if (Math.abs(diffX) < tapThreshold && Math.abs(diffY) < tapThreshold) {
+                if (handleReaderTapNavigation(touchEndX)) return;
+                if (getReaderTapZone(touchEndX) !== 'center') return;
                 toggleReaderChrome();
             }
         }
@@ -3449,6 +4345,7 @@
         let pagedResizeListenerBound = false;
         let pagedResizeTimer = null;
         let readerScrollRaf = null;
+        let readerJumpLockUntil = 0;
 
         function setupPagedResizeListener() {
             if (pagedResizeListenerBound) return;
@@ -3466,35 +4363,21 @@
             });
         }
 
-        function scrollToPageIndex(pageIdx, behavior = 'auto') {
+        function scrollToPageIndex(pageIdx, behavior = 'auto', preferredParaIdx = null) {
             if (!pagedLayout.length) return;
 
             const viewport = document.getElementById('reader-viewport');
-            syncPagedPageDimensions();
-            const pageWidth = viewport.clientWidth;
-            if (pageWidth <= 0) {
-                requestAnimationFrame(() => scrollToPageIndex(pageIdx, behavior));
+            if (!viewport?.clientWidth) {
+                requestAnimationFrame(() => scrollToPageIndex(pageIdx, behavior, preferredParaIdx));
                 return;
             }
 
-            currentPageIndex = Math.max(0, Math.min(pageIdx, pagedLayout.length - 1));
-            viewport.scrollTo({ left: currentPageIndex * pageWidth, behavior: 'auto' });
-
-            const page = pagedLayout[currentPageIndex];
-            if (page?.blocks?.length) {
-                currentParaIndex = page.blocks[0].paraIdx;
-            }
-
-            updatePagedIndicator();
-            updateSliderProgress();
-            if (!speechIsPlaying) {
-                clearParagraphHighlight();
-            }
+            scrollPagedViewportToPage(pageIdx, preferredParaIdx);
         }
 
         function scrollToPageOfParagraph(paraIdx, behavior = 'auto') {
             currentParaIndex = paraIdx;
-            scrollToPageIndex(getPageIndexForParagraph(paraIdx), behavior);
+            scrollToPageIndex(getPageIndexForParagraph(paraIdx), behavior, paraIdx);
         }
 
         function handleReaderScroll() {
@@ -3506,41 +4389,26 @@
         }
 
         function handleReaderScrollFrame() {
+            if (Date.now() < readerJumpLockUntil) return;
+            if (speechIsPlaying) return;
+
             if (readerConfig.mode === 'scroll') {
-                const viewport = document.getElementById('reader-viewport');
-                const paras = document.getElementById('reader-content').children;
-                const middleY = viewport.clientHeight / 2;
-                let closestIdx = 0;
-                let closestDiff = Infinity;
-
-                for (let i = 0; i < paras.length; i++) {
-                    const rect = paras[i].getBoundingClientRect();
-                    const diff = Math.abs(rect.top - middleY);
-                    if (diff < closestDiff) {
-                        closestDiff = diff;
-                        const paraIdx = parseInt(paras[i].getAttribute('data-para-idx'), 10);
-                        closestIdx = Number.isFinite(paraIdx) ? paraIdx : i;
-                    }
-                }
-
-                if (closestIdx !== currentParaIndex && !speechIsPlaying) {
+                const closestIdx = getParaIndexFromScrollViewport();
+                if (closestIdx !== currentParaIndex) {
                     currentParaIndex = closestIdx;
-                    updateSliderProgress();
+                    updateSliderProgress({ syncFromViewport: false });
                 }
-            } else {
-                const viewport = document.getElementById('reader-viewport');
-                const scrollLeft = viewport.scrollLeft;
-                const width = viewport.clientWidth;
-                if (width <= 0 || !pagedLayout.length) return;
+            } else if (pagedLayout.length) {
+                const activePageIdx = getActivePageIndexFromViewport();
+                const page = pagedLayout[activePageIdx];
+                const nextParaIdx = page?.blocks?.length
+                    ? Math.max(...page.blocks.map((block) => block.paraIdx))
+                    : currentParaIndex;
 
-                const activePageIdx = Math.round(scrollLeft / width);
-                if (activePageIdx !== currentPageIndex && activePageIdx < pagedLayout.length) {
+                if (activePageIdx !== currentPageIndex || nextParaIdx !== currentParaIndex) {
                     currentPageIndex = activePageIdx;
-                    const page = pagedLayout[currentPageIndex];
-                    if (page?.blocks?.length && !speechIsPlaying) {
-                        currentParaIndex = page.blocks[0].paraIdx;
-                    }
-                    updateSliderProgress();
+                    currentParaIndex = nextParaIdx;
+                    updateSliderProgress({ syncFromViewport: false });
                     updatePagedIndicator();
                 }
             }
@@ -3555,47 +4423,65 @@
                 }
                 scrollToParagraph(currentParaIndex);
             } else {
+                if (!pagedLayout.length) return;
+                if (direction === 'next' && currentPageIndex >= pagedLayout.length - 1) return;
+                if (direction === 'prev' && currentPageIndex <= 0) return;
+
                 const nextPage = direction === 'prev'
-                    ? Math.max(0, currentPageIndex - 1)
-                    : Math.min(pagedLayout.length - 1, currentPageIndex + 1);
-                scrollToPageIndex(nextPage, 'auto');
+                    ? currentPageIndex - 1
+                    : currentPageIndex + 1;
+                const nextPageBlocks = pagedLayout[nextPage]?.blocks;
+                const preferredPara = nextPageBlocks?.length
+                    ? Math.max(...nextPageBlocks.map((block) => block.paraIdx))
+                    : null;
+                readerJumpLockUntil = Date.now() + 500;
+                scrollToPageIndex(nextPage, 'auto', preferredPara);
             }
-            updateSliderProgress();
+            updateSliderProgress({ syncFromViewport: false });
         }
 
         function handleProgressSliderChange(value) {
-            const targetIdx = Math.floor((value / 100) * (currentParagraphs.length - 1));
-            currentParaIndex = targetIdx;
-            if (readerConfig.mode === 'scroll') {
-                scrollToParagraph(targetIdx);
+            readerJumpLockUntil = Date.now() + 1200;
+            if (readerConfig.mode === 'paged' && pagedLayout.length > 1) {
+                const targetPage = Math.round((value / 100) * (pagedLayout.length - 1));
+                const pageBlocks = pagedLayout[targetPage]?.blocks;
+                currentPageIndex = targetPage;
+                currentParaIndex = pageBlocks?.length
+                    ? Math.max(...pageBlocks.map((block) => block.paraIdx))
+                    : Math.floor((value / 100) * (currentParagraphs.length - 1));
+                scrollToPageIndex(targetPage, 'auto', currentParaIndex);
             } else {
-                scrollToPageOfParagraph(targetIdx);
+                const targetIdx = Math.floor((value / 100) * (currentParagraphs.length - 1));
+                currentParaIndex = targetIdx;
+                scrollToParagraph(targetIdx);
             }
-            updateSliderProgress();
+            updateSliderProgress({ syncFromViewport: false });
         }
 
         function scrollToParagraph(idx, behavior = 'smooth') {
             if (readerConfig.mode === 'paged') {
                 currentParaIndex = idx;
-                scrollToPageIndex(getPageIndexForParagraph(idx), 'auto');
+                scrollToPageIndex(getPageIndexForParagraph(idx), behavior, idx);
                 return;
             }
 
-            flushScrollRenderUntil(idx);
+            ensureParagraphRendered(idx);
 
             const tryScroll = (attempts = 0) => {
-                flushScrollRenderUntil(idx);
+                ensureParagraphRendered(idx);
                 const target = document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
                 if (target) {
                     const viewport = document.getElementById('reader-viewport');
-                    const targetRect = target.getBoundingClientRect();
                     const viewportRect = viewport.getBoundingClientRect();
-                    const scrollTop = viewport.scrollTop + (targetRect.top - viewportRect.top) - 12;
-                    viewport.scrollTo({ top: Math.max(0, scrollTop), behavior });
+                    const targetRect = target.getBoundingClientRect();
+                    const topInset = getReaderTopInset();
+                    const nextTop = viewport.scrollTop + (targetRect.top - viewportRect.top) - topInset;
+                    viewport.scrollTo({ top: Math.max(0, nextTop), behavior });
+                    currentParaIndex = idx;
                     if (!speechIsPlaying) clearParagraphHighlight();
                     return;
                 }
-                if (attempts < 80) requestAnimationFrame(() => tryScroll(attempts + 1));
+                if (attempts < 240) requestAnimationFrame(() => tryScroll(attempts + 1));
             };
             tryScroll();
         }
@@ -3621,27 +4507,44 @@
             if (target) target.classList.add('speech-highlight');
         }
 
+        function getCatalogItemClass(isCurrent) {
+            if (isCurrent) {
+                return "w-full text-left p-3.5 rounded-2xl bg-indigo-600 text-white font-extrabold active:scale-[0.98] transition-all truncate shadow-sm shadow-indigo-500/20";
+            }
+            return "w-full text-left p-3.5 rounded-2xl border-b border-zinc-50 dark:border-zinc-800/30 hover:bg-indigo-50/70 dark:hover:bg-zinc-800/50 text-zinc-700 dark:text-zinc-300 font-extrabold active:scale-[0.98] transition-all truncate";
+        }
+
+        function updateCatalogHighlight() {
+            const currentChapterIdx = getCurrentChapterParaIndex();
+            document.querySelectorAll('#catalog-list [data-chapter-idx]').forEach((item) => {
+                const idx = parseInt(item.dataset.chapterIdx, 10);
+                const isCurrent = idx === currentChapterIdx;
+                item.className = getCatalogItemClass(isCurrent);
+                item.dataset.catalogCurrent = isCurrent ? 'true' : 'false';
+            });
+        }
+
+        function scrollCatalogToCurrent() {
+            const current = document.querySelector('#catalog-list [data-catalog-current="true"]');
+            if (current) current.scrollIntoView({ block: 'nearest' });
+        }
+
         function buildCatalog() {
             const list = document.getElementById('catalog-list');
             list.innerHTML = '';
 
+            const currentChapterIdx = getCurrentChapterParaIndex();
             let count = 0;
             currentParagraphs.forEach((para, idx) => {
                 if (isChapterPara(para)) {
                     count++;
+                    const isCurrent = idx === currentChapterIdx;
                     const item = document.createElement('button');
-                    item.className = "w-full text-left p-3.5 rounded-2xl border-b border-zinc-50 dark:border-zinc-800/30 hover:bg-indigo-50/70 dark:hover:bg-zinc-800/50 text-zinc-700 dark:text-zinc-300 font-extrabold active:scale-[0.98] transition-all truncate";
+                    item.dataset.chapterIdx = idx;
+                    item.dataset.catalogCurrent = isCurrent ? 'true' : 'false';
+                    item.className = getCatalogItemClass(isCurrent);
                     item.innerText = formatChapterTitle(para);
-                    item.onclick = () => {
-                        currentParaIndex = idx;
-                        if (readerConfig.mode === 'scroll') {
-                            scrollToParagraph(idx);
-                        } else {
-                            scrollToPageOfParagraph(idx);
-                        }
-                        updateSliderProgress();
-                        toggleCatalogPanel();
-                    };
+                    item.onclick = () => jumpToChapterFromCatalog(idx);
                     list.appendChild(item);
                 }
             });
@@ -3678,12 +4581,14 @@
             const header = document.getElementById('reader-header');
             if (!readerView || !footer) return;
 
-            const surfaceClasses = ['bg-white', 'text-zinc-900', 'bg-sepia-50', 'text-sepia-950', 'bg-eye-50', 'text-eye-950', 'bg-slate-50', 'text-slate-900', 'bg-zinc-900', 'text-indigo-100', 'bg-black', 'text-zinc-200'];
+            const viewSurfaceClasses = ['bg-white', 'text-zinc-900', 'bg-sepia-50', 'text-sepia-950', 'bg-eye-50', 'text-eye-950', 'bg-slate-50', 'text-slate-900', 'bg-zinc-900', 'text-indigo-100', 'bg-black', 'text-zinc-200'];
+            const footerSurfaceClasses = ['bg-white', 'bg-sepia-50', 'bg-eye-50', 'bg-slate-50', 'bg-zinc-900', 'bg-black', 'text-zinc-600', 'text-sepia-900', 'text-eye-900', 'text-slate-700', 'text-indigo-100', 'text-zinc-300'];
+            const headerSurfaceClasses = ['bg-white', 'bg-sepia-50', 'bg-eye-50', 'bg-slate-50', 'bg-zinc-900', 'bg-black', 'border-zinc-100', 'border-zinc-800', 'dark:border-zinc-800'];
             const themeKeys = ['theme-light', 'theme-sepia', 'theme-eye', 'theme-slate', 'theme-midnight', 'theme-dark'];
 
-            readerView.classList.remove(...surfaceClasses);
-            footer.classList.remove(...surfaceClasses, ...themeKeys);
-            if (header) header.classList.remove(...themeKeys);
+            readerView.classList.remove(...viewSurfaceClasses);
+            footer.classList.remove(...footerSurfaceClasses, ...themeKeys);
+            if (header) header.classList.remove(...headerSurfaceClasses, ...themeKeys);
 
             const theme = readerConfig.theme;
             footer.classList.add(`theme-${theme}`);
@@ -3692,21 +4597,31 @@
             if (theme === 'light') {
                 readerView.classList.add('bg-white');
                 footer.classList.add('bg-white', 'text-zinc-600');
+                if (header) header.classList.add('bg-white', 'border-zinc-100');
             } else if (theme === 'sepia') {
                 readerView.classList.add('bg-sepia-50');
                 footer.classList.add('bg-sepia-50', 'text-sepia-900');
+                if (header) header.classList.add('bg-sepia-50', 'border-zinc-100');
             } else if (theme === 'eye') {
                 readerView.classList.add('bg-eye-50');
                 footer.classList.add('bg-eye-50', 'text-eye-900');
+                if (header) header.classList.add('bg-eye-50', 'border-zinc-100');
             } else if (theme === 'slate') {
                 readerView.classList.add('bg-slate-50');
                 footer.classList.add('bg-slate-50', 'text-slate-700');
+                if (header) header.classList.add('bg-slate-50', 'border-zinc-100');
             } else if (theme === 'midnight') {
                 readerView.classList.add('bg-zinc-900');
                 footer.classList.add('bg-zinc-900', 'text-indigo-100');
+                if (header) {
+                    header.classList.add('bg-zinc-900', 'border-zinc-800');
+                }
             } else if (theme === 'dark') {
                 readerView.classList.add('bg-black');
                 footer.classList.add('bg-black', 'text-zinc-300');
+                if (header) {
+                    header.classList.add('bg-black', 'border-zinc-800');
+                }
             }
         }
 
@@ -3858,59 +4773,95 @@
             }
         }
 
+        function getSpeakableParagraphText(paraIdx) {
+            if (!Number.isFinite(paraIdx) || paraIdx < 0 || paraIdx >= currentParagraphs.length) return '';
+            return currentParagraphs[paraIdx].replace(/\[章节\]/g, '').trim();
+        }
+
+        function getNextSpeakableParaIndex(startIdx) {
+            for (let i = Math.max(0, startIdx); i < currentParagraphs.length; i++) {
+                if (getSpeakableParagraphText(i)) return i;
+            }
+            return currentParagraphs.length;
+        }
+
+        function scheduleSpeakParagraph(idx, delayMs = 60) {
+            clearTimeout(ttsSpeakTimer);
+            const token = ++ttsSpeakToken;
+            ttsSpeakTimer = setTimeout(() => {
+                if (token !== ttsSpeakToken || !speechIsPlaying) return;
+                speakParagraph(idx);
+            }, delayMs);
+        }
+
         function speakParagraph(idx) {
             if (!speechSynth) {
                 showToast("设备当前对伴读引擎不支持");
                 return;
             }
 
+            clearTimeout(ttsSpeakTimer);
+            const speakToken = ++ttsSpeakToken;
             speechSynth.cancel();
 
-            if (idx >= currentParagraphs.length) {
+            const targetIdx = getNextSpeakableParaIndex(idx);
+            if (targetIdx >= currentParagraphs.length) {
                 stopSpeech();
                 showToast("全书知识汲取完毕！");
                 return;
             }
 
-            const text = currentParagraphs[idx].replace('[章节]', '').trim();
+            const text = getSpeakableParagraphText(targetIdx);
+            if (!text) {
+                scheduleSpeakParagraph(targetIdx + 1, 0);
+                return;
+            }
+
+            currentParaIndex = targetIdx;
+            speechIsPlaying = true;
             speechUtterance = new SpeechSynthesisUtterance(text);
-            
+
             if (selectedVoice) {
                 speechUtterance.voice = selectedVoice;
             }
-            
+
             speechUtterance.rate = speechSpeed;
 
             speechUtterance.onstart = () => {
-                speechIsPlaying = true;
-                ttsActiveIndex = idx;
-                
+                if (speakToken !== ttsSpeakToken) return;
+                ttsActiveIndex = targetIdx;
+                readerJumpLockUntil = Date.now() + 800;
+
                 if (readerConfig.mode === 'scroll') {
-                    scrollToParagraph(idx);
+                    scrollToParagraph(targetIdx);
                 } else {
-                    scrollToPageOfParagraph(idx);
+                    scrollToPageOfParagraph(targetIdx);
                 }
 
                 document.getElementById('tts-play-btn').innerHTML = '<i data-lucide="pause" class="w-6 h-6 text-white fill-white"></i>';
                 safeCreateIcons();
-                highlightActiveParagraphInViewport(idx);
+                highlightActiveParagraphInViewport(targetIdx);
 
                 const silentPlayer = document.getElementById('silent-player');
                 silentPlayer.play().catch(e => console.log("静音伴音开始工作", e));
             };
 
             speechUtterance.onend = () => {
-                if (speechIsPlaying && idx + 1 < currentParagraphs.length) {
-                    currentParaIndex = idx + 1;
-                    updateSliderProgress();
-                    speakParagraph(currentParaIndex);
+                if (speakToken !== ttsSpeakToken || !speechIsPlaying) return;
+                const nextIdx = getNextSpeakableParaIndex(targetIdx + 1);
+                if (nextIdx < currentParagraphs.length) {
+                    currentParaIndex = nextIdx;
+                    updateSliderProgress({ syncFromViewport: false });
+                    scheduleSpeakParagraph(nextIdx);
                 } else {
                     stopSpeech();
+                    showToast("全书知识汲取完毕！");
                 }
             };
 
             speechUtterance.onerror = (e) => {
-                if (e.error !== 'interrupted') {
+                if (speakToken !== ttsSpeakToken) return;
+                if (e.error !== 'interrupted' && e.error !== 'canceled') {
                     stopSpeech();
                 }
             };
@@ -3922,6 +4873,8 @@
             const silentPlayer = document.getElementById('silent-player');
 
             if (speechIsPlaying) {
+                clearTimeout(ttsSpeakTimer);
+                ttsSpeakToken++;
                 speechSynth.pause();
                 speechIsPlaying = false;
                 silentPlayer.pause();
@@ -3948,6 +4901,8 @@
         }
 
         function stopSpeech() {
+            clearTimeout(ttsSpeakTimer);
+            ttsSpeakToken++;
             if (speechSynth) {
                 speechSynth.cancel();
             }
@@ -4020,6 +4975,12 @@
 
         function handleReadingVisibilityChange() {
             if (!isReaderOpen()) return;
+            if (document.visibilityState === 'hidden') {
+                readerJumpLockUntil = 0;
+                persistReadingPosition({ syncFromViewport: true });
+                clearTimeout(readingPositionSaveTimer);
+                saveToLocalStorage().catch(() => {});
+            }
             isReadingSessionActive = document.visibilityState === 'visible';
         }
 
@@ -4254,10 +5215,13 @@
             if (catalogBuiltForBookId !== currentBook?.id) {
                 buildCatalog();
                 catalogBuiltForBookId = currentBook?.id;
+            } else {
+                updateCatalogHighlight();
             }
             document.getElementById('catalog-panel-backdrop').classList.remove('hidden');
             document.getElementById('catalog-panel').classList.remove('hidden');
             syncReaderOverlayLock();
+            requestAnimationFrame(() => scrollCatalogToCurrent());
         }
 
         function toggleCatalogPanel() {
@@ -4270,11 +5234,7 @@
         }
     </script>
     <script>
-        (async function refreshPreviewCacheIfNeeded() {
-            const APP_VERSION = '14';
-            const versionKey = 'modern-cognito-reader_preview_version';
-            if (localStorage.getItem(versionKey) === APP_VERSION) return;
-            localStorage.setItem(versionKey, APP_VERSION);
+        (async function disableStaleServiceWorker() {
             try {
                 if ('serviceWorker' in navigator) {
                     const regs = await navigator.serviceWorker.getRegistrations();
@@ -4282,20 +5242,16 @@
                 }
                 if ('caches' in window) {
                     const keys = await caches.keys();
-                    await Promise.all(keys.map((key) => caches.delete(key)));
+                    await Promise.all(
+                        keys
+                            .filter((key) => key.startsWith('cognito-reader'))
+                            .map((key) => caches.delete(key))
+                    );
                 }
             } catch (err) {
-                console.warn('预览缓存清理失败:', err);
+                console.warn('清理旧离线缓存失败:', err);
             }
         })();
-
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js?v=13').catch((err) => {
-                    console.warn('Service Worker 注册失败:', err);
-                });
-            });
-        }
     </script>
 </body>
 </html>
