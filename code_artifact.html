@@ -37,9 +37,7 @@
             elements.forEach(el => {
                 const txt = el.textContent.trim();
                 if (!txt) return;
-                if (/^H1$/i.test(el.tagName)) {
-                    fullText += `\n\n第[章节] ${txt}\n\n`;
-                } else if (/^H[2-6]$/i.test(el.tagName)) {
+                if (/^H[1-6]$/i.test(el.tagName)) {
                     fullText += `\n\n${txt}\n\n`;
                 } else {
                     fullText += `${txt}\n\n`;
@@ -1867,7 +1865,7 @@
                 if (ext === 'txt') {
                     const reader = new FileReader();
                     reader.onload = function(e) {
-                        addBookToShelf(baseName, '自主思索', e.target.result);
+                        addBookToShelf(baseName, '自主思索', normalizeTxtChapterMarkers(e.target.result));
                     };
                     reader.readAsText(file, 'UTF-8');
                 } else if (ext === 'pdf') {
@@ -2036,6 +2034,147 @@
             return xmlElements(opfDoc, 'itemref')
                 .map((ref) => ref.getAttribute('idref'))
                 .filter(Boolean);
+        }
+
+        const FRONT_MATTER_TITLE_RE = /^(封面|扉页|版权|著作权|书名页|书名|前言|序言|序$|引言|致辞|献词|致谢|编者|出版|内容简介|内容提要|目录|目\s*录|contents|table\s+of\s+contents|cover|title\s*page|copyright|dedication|preface|foreword|acknowledg(e)?ments?|about\s+(the\s+)?author|colophon|imprint|publication\s+data)/i;
+
+        function isFrontMatterTitle(title) {
+            const t = String(title || '').trim();
+            if (!t) return true;
+            return FRONT_MATTER_TITLE_RE.test(t);
+        }
+
+        function headingSimilar(a, b) {
+            if (!a || !b) return false;
+            const na = a.replace(/\s+/g, '').toLowerCase();
+            const nb = b.replace(/\s+/g, '').toLowerCase();
+            return na === nb || na.includes(nb) || nb.includes(na);
+        }
+
+        function normalizeEpubHref(href, opfDir) {
+            if (!href) return '';
+            const pathOnly = href.split('#')[0].trim();
+            return normalizeZipPath(resolveManifestHref(opfDir, pathOnly));
+        }
+
+        function hrefMatchesSpineFile(candidateHref, spineHref, relativeHref, opfDir) {
+            const targets = new Set([
+                normalizeZipPath(spineHref),
+                normalizeZipPath(relativeHref),
+                normalizeZipPath(opfDir + relativeHref)
+            ].filter(Boolean));
+            const candidate = normalizeEpubHref(candidateHref, opfDir);
+            if (targets.has(candidate)) return true;
+            const candidateBase = candidate.split('/').pop();
+            return [...targets].some((target) => target.split('/').pop() === candidateBase);
+        }
+
+        function getNcxManifestHref(opfDoc, manifest) {
+            const tocId = opfDoc.documentElement.getAttribute('toc');
+            if (tocId && manifest[tocId]?.href) return manifest[tocId].href;
+            const ncxItem = Object.values(manifest).find((item) => item.mediaType === 'application/x-dtbncx+xml');
+            return ncxItem?.href || null;
+        }
+
+        async function extractEpubNavToc(zip, parser, opfDir, manifest) {
+            const navItem = Object.values(manifest).find((item) => item.properties?.includes('nav'));
+            if (!navItem?.href) return [];
+
+            const navEntry = findZipEntry(
+                zip,
+                resolveManifestHref(opfDir, navItem.href),
+                navItem.href,
+                normalizeZipPath(opfDir + navItem.href)
+            );
+            if (!navEntry) return [];
+
+            const navDoc = parser.parseFromString(await navEntry.async('text'), 'text/html');
+            const tocNav = navDoc.querySelector(
+                'nav[epub\\:type~="toc"], nav[epub\\:type="toc"], nav[type~="doc-toc"], nav[type="toc"], nav#toc, nav#TOC, [role="doc-toc"]'
+            );
+            if (!tocNav) return [];
+
+            const entries = [];
+            tocNav.querySelectorAll('a[href]').forEach((anchor) => {
+                const title = anchor.textContent.trim();
+                const href = anchor.getAttribute('href');
+                if (title && href) entries.push({ href, title, fragment: href.includes('#') ? href.split('#')[1] : '' });
+            });
+            return entries;
+        }
+
+        async function extractEpubNcxToc(zip, parser, opfDoc, opfDir, manifest) {
+            const ncxHref = getNcxManifestHref(opfDoc, manifest);
+            if (!ncxHref) return [];
+
+            const ncxEntry = findZipEntry(
+                zip,
+                resolveManifestHref(opfDir, ncxHref),
+                ncxHref,
+                normalizeZipPath(opfDir + ncxHref)
+            );
+            if (!ncxEntry) return [];
+
+            const ncxDoc = parser.parseFromString(await ncxEntry.async('text'), 'text/xml');
+            const entries = [];
+            xmlElements(ncxDoc, 'navPoint').forEach((navPoint) => {
+                const labels = xmlElements(navPoint, 'text');
+                const title = labels.map((node) => node.textContent.trim()).find(Boolean) || '';
+                const src = xmlElements(navPoint, 'content')[0]?.getAttribute('src') || '';
+                if (!title || !src) return;
+                entries.push({ href: src, title, fragment: src.includes('#') ? src.split('#')[1] : '' });
+            });
+            return entries;
+        }
+
+        async function extractEpubToc(zip, parser, opfDoc, opfDir, manifest) {
+            const navEntries = await extractEpubNavToc(zip, parser, opfDir, manifest);
+            if (navEntries.length) return navEntries;
+            return extractEpubNcxToc(zip, parser, opfDoc, opfDir, manifest);
+        }
+
+        function collectAnchorTitlesForSpine(tocEntries, opfDir, spineHref, relativeHref) {
+            const anchors = new Map();
+            tocEntries.forEach((entry) => {
+                if (!entry.title || isFrontMatterTitle(entry.title)) return;
+                if (!hrefMatchesSpineFile(entry.href, spineHref, relativeHref, opfDir)) return;
+                const fragment = entry.fragment || (entry.href.includes('#') ? entry.href.split('#')[1] : '');
+                if (fragment) {
+                    anchors.set(fragment, entry.title);
+                } else if (!anchors.has('__spine__')) {
+                    anchors.set('__spine__', entry.title);
+                }
+            });
+            return anchors;
+        }
+
+        function appendEpubChapterHtml(htmlDoc, options = {}) {
+            const { spineChapterTitle = null, anchorTitles = null } = options;
+            let skipHeading = spineChapterTitle;
+            let out = '';
+
+            if (spineChapterTitle) {
+                out += `\n\n第[章节] ${spineChapterTitle}\n\n`;
+            }
+
+            htmlDoc.querySelectorAll('h1, h2, h3, h4, p, li').forEach((el) => {
+                const id = el.getAttribute('id');
+                if (anchorTitles && id && anchorTitles.has(id)) {
+                    out += `\n\n第[章节] ${anchorTitles.get(id)}\n\n`;
+                    if (headingSimilar(el.textContent.trim(), anchorTitles.get(id))) return;
+                }
+
+                const txt = el.textContent.trim();
+                if (!txt) return;
+
+                if (skipHeading && el.tagName.startsWith('H') && headingSimilar(txt, skipHeading)) {
+                    skipHeading = null;
+                    return;
+                }
+
+                out += `${txt}\n\n`;
+            });
+            return out;
         }
 
         function manifestHref(manifest, id) {
@@ -2267,6 +2406,9 @@
             let fullText = "";
             showToast("正在解析 EPUB 章节...");
 
+            const tocEntries = await extractEpubToc(zip, parser, opfDoc, opfDir, manifest);
+            const hasToc = tocEntries.length > 0;
+
             for (const idref of spine) {
                 const relativeHref = manifestHref(manifest, idref);
                 if (!relativeHref) continue;
@@ -2278,22 +2420,19 @@
                 const htmlText = await chapterFile.async("text");
                 const htmlDoc = parser.parseFromString(htmlText, "text/html");
 
-                let fileChapterMarked = false;
-                htmlDoc.querySelectorAll("h1, h2, h3, h4, p").forEach(el => {
-                    const txt = el.textContent.trim();
-                    if (!txt.length) return;
-                    if (el.tagName.startsWith('H')) {
-                        const isChapterHeading = el.tagName === 'H1' || (!fileChapterMarked && el.tagName === 'H2');
-                        if (isChapterHeading) {
-                            fileChapterMarked = true;
-                            fullText += `\n\n第[章节] ${txt}\n\n`;
-                        } else {
-                            fullText += `\n\n${txt}\n\n`;
-                        }
-                    } else {
-                        fullText += `${txt}\n\n`;
-                    }
-                });
+                if (hasToc) {
+                    const anchorTitles = collectAnchorTitlesForSpine(tocEntries, opfDir, href, relativeHref);
+                    const spineChapterTitle = anchorTitles.get('__spine__') || null;
+                    fullText += appendEpubChapterHtml(htmlDoc, { spineChapterTitle, anchorTitles });
+                    continue;
+                }
+
+                const firstHeading = htmlDoc.querySelector('h1, h2');
+                const headingText = firstHeading?.textContent?.trim() || '';
+                const spineTitle = headingText && !isFrontMatterTitle(headingText) && headingText.length <= 80
+                    ? headingText
+                    : null;
+                fullText += appendEpubChapterHtml(htmlDoc, { spineChapterTitle: spineTitle });
             }
 
             return { text: fullText, title, author, coverImage };
@@ -2754,14 +2893,34 @@
         }
 
         function isChapterPara(para) {
-            if (para.startsWith('第[章节]')) return true;
-            if (!para.startsWith('第')) return false;
-            const head = para.slice(0, 30);
-            return head.includes('章') || head.includes('节');
+            return typeof para === 'string' && para.startsWith('第[章节]');
         }
 
         function formatChapterTitle(para) {
             return para.replace(/^第\[章节\]\s*/, '').trim();
+        }
+
+        function isLikelyCatalogChapter(para) {
+            if (!isChapterPara(para)) return false;
+            const title = formatChapterTitle(para);
+            if (!title || title.length > 100) return false;
+            if (isFrontMatterTitle(title)) return false;
+            return true;
+        }
+
+        function normalizeTxtChapterMarkers(text) {
+            return String(text || '').split('\n').map((line) => {
+                const trimmed = line.trim();
+                if (!trimmed) return line;
+                if (trimmed.startsWith('第[章节]')) return trimmed;
+                if (/^第[0-9零一二三四五六七八九十百千]+[章节][^\n]{0,48}$/.test(trimmed)) {
+                    return `第[章节] ${trimmed}`;
+                }
+                if (/^Chapter\s+\d+([:.\s-]|$)/i.test(trimmed) && trimmed.length <= 80) {
+                    return `第[章节] ${trimmed}`;
+                }
+                return line;
+            }).join('\n');
         }
 
         function getChapterJumpTargetParaIndex(chapterParaIdx) {
@@ -4536,17 +4695,16 @@
             const currentChapterIdx = getCurrentChapterParaIndex();
             let count = 0;
             currentParagraphs.forEach((para, idx) => {
-                if (isChapterPara(para)) {
-                    count++;
-                    const isCurrent = idx === currentChapterIdx;
-                    const item = document.createElement('button');
-                    item.dataset.chapterIdx = idx;
-                    item.dataset.catalogCurrent = isCurrent ? 'true' : 'false';
-                    item.className = getCatalogItemClass(isCurrent);
-                    item.innerText = formatChapterTitle(para);
-                    item.onclick = () => jumpToChapterFromCatalog(idx);
-                    list.appendChild(item);
-                }
+                if (!isLikelyCatalogChapter(para)) return;
+                count++;
+                const isCurrent = idx === currentChapterIdx;
+                const item = document.createElement('button');
+                item.dataset.chapterIdx = idx;
+                item.dataset.catalogCurrent = isCurrent ? 'true' : 'false';
+                item.className = getCatalogItemClass(isCurrent);
+                item.innerText = formatChapterTitle(para);
+                item.onclick = () => jumpToChapterFromCatalog(idx);
+                list.appendChild(item);
             });
 
             if (count === 0) {
