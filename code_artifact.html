@@ -743,7 +743,7 @@
                 <div class="flex items-center justify-between mb-4 pb-2 border-b border-zinc-100 dark:border-zinc-800/80">
                     <div class="flex items-center space-x-1.5 text-xs font-black text-zinc-800 dark:text-zinc-200">
                         <i data-lucide="mic" class="w-4 h-4 text-indigo-600 animate-pulse"></i>
-                        <span>AI 深度伴读引擎 (支持锁屏)</span>
+                        <span>智能伴读 (支持锁屏)</span>
                     </div>
                     <button onclick="toggleTtsControlPanel()" class="p-1 bg-zinc-50 dark:bg-zinc-800 rounded-lg text-zinc-400"><i data-lucide="x" class="w-4 h-4"></i></button>
                 </div>
@@ -751,7 +751,7 @@
                 <div class="flex flex-col space-y-4">
                     <div class="grid grid-cols-2 gap-4 text-xs">
                         <div class="flex flex-col space-y-1.5">
-                            <span class="text-zinc-400 font-bold">听书声线选择</span>
+                            <span class="text-zinc-400 font-bold">听书声线 (★ 为推荐)</span>
                             <select id="tts-voice-select" class="bg-zinc-50 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 rounded-xl p-2.5 border border-zinc-100 dark:border-zinc-700 focus:outline-none font-medium"></select>
                         </div>
                         <div class="flex flex-col space-y-1.5">
@@ -1010,6 +1010,7 @@
         let ttsActiveIndex = null;
         let ttsSpeakTimer = null;
         let ttsSpeakToken = 0;
+        const TTS_VOICE_PREF_KEY = 'reader_tts_voice_v1';
 
         let readerConfig = {
             theme: 'light',
@@ -3347,6 +3348,7 @@
             readerJumpLockUntil = Math.max(readerJumpLockUntil, Date.now() + 3500);
             updateSliderProgress({ syncFromViewport: false });
             updateCatalogHighlight();
+            if (speechIsPlaying) resumeSpeechFromPosition(idx);
             return true;
         }
 
@@ -4589,25 +4591,24 @@
                 const nextPage = direction === 'prev'
                     ? currentPageIndex - 1
                     : currentPageIndex + 1;
-                const nextPageBlocks = pagedLayout[nextPage]?.blocks;
-                const preferredPara = nextPageBlocks?.length
-                    ? Math.max(...nextPageBlocks.map((block) => block.paraIdx))
-                    : null;
+                const preferredPara = getPageStartSpeakableParaIndex(nextPage);
                 readerJumpLockUntil = Date.now() + 500;
                 scrollToPageIndex(nextPage, 'auto', preferredPara);
             }
             updateSliderProgress({ syncFromViewport: false });
+            if (speechIsPlaying) resumeSpeechFromPosition(currentParaIndex);
         }
 
         function handleProgressSliderChange(value) {
             readerJumpLockUntil = Date.now() + 1200;
             if (readerConfig.mode === 'paged' && pagedLayout.length > 1) {
                 const targetPage = Math.round((value / 100) * (pagedLayout.length - 1));
-                const pageBlocks = pagedLayout[targetPage]?.blocks;
                 currentPageIndex = targetPage;
-                currentParaIndex = pageBlocks?.length
-                    ? Math.max(...pageBlocks.map((block) => block.paraIdx))
-                    : Math.floor((value / 100) * (currentParagraphs.length - 1));
+                currentParaIndex = speechIsPlaying
+                    ? getPageStartSpeakableParaIndex(targetPage)
+                    : (pagedLayout[targetPage]?.blocks?.length
+                        ? Math.max(...pagedLayout[targetPage].blocks.map((block) => block.paraIdx))
+                        : Math.floor((value / 100) * (currentParagraphs.length - 1)));
                 scrollToPageIndex(targetPage, 'auto', currentParaIndex);
             } else {
                 const targetIdx = Math.floor((value / 100) * (currentParagraphs.length - 1));
@@ -4615,6 +4616,7 @@
                 scrollToParagraph(targetIdx);
             }
             updateSliderProgress({ syncFromViewport: false });
+            if (speechIsPlaying) resumeSpeechFromPosition(currentParaIndex);
         }
 
         function scrollToParagraph(idx, behavior = 'smooth') {
@@ -4868,6 +4870,40 @@
             applyReaderConfig();
         }
 
+        function scoreTtsVoice(voice) {
+            const name = voice.name.toLowerCase();
+            const lang = (voice.lang || '').toLowerCase();
+            let score = 0;
+
+            if (lang.startsWith('zh')) score += 40;
+            if (lang.includes('cn')) score += 10;
+            if (/natural|neural|premium|enhanced|online|xiaoxiao|yunxi|xiaoyi|xiaomo|xiaoxuan|tingting|meijia|sin-ji|sinji|yunjian/.test(name)) {
+                score += 55;
+            }
+            if (/google/.test(name) && lang.startsWith('zh')) score += 35;
+            if (/microsoft/.test(name) && !voice.localService) score += 30;
+            if (!voice.localService) score += 12;
+            if (/desktop|compact|espeak|robby|fred|junior|shelley|kal/.test(name)) score -= 35;
+            if (voice.default) score += 8;
+            return score;
+        }
+
+        function getRankedTtsVoices(voices) {
+            return voices
+                .filter((voice) => voice.lang.includes('zh') || voice.lang.includes('en'))
+                .sort((a, b) => scoreTtsVoice(b) - scoreTtsVoice(a));
+        }
+
+        function pickDefaultTtsVoice(voices) {
+            const savedName = localStorage.getItem(TTS_VOICE_PREF_KEY);
+            if (savedName) {
+                const saved = voices.find((voice) => voice.name === savedName);
+                if (saved) return saved;
+            }
+            const ranked = getRankedTtsVoices(voices);
+            return ranked[0] || voices.find((voice) => voice.default) || voices[0] || null;
+        }
+
         function initTtsVoices() {
             if (!speechSynth) return;
             const select = document.getElementById('tts-voice-select');
@@ -4877,24 +4913,27 @@
                 const voices = speechSynth.getVoices();
                 select.innerHTML = '';
 
-                const filterVoices = voices.filter(v => v.lang.includes('zh') || v.lang.includes('en'));
-                
-                if (filterVoices.length === 0) {
+                const ranked = getRankedTtsVoices(voices);
+                if (ranked.length === 0) {
                     const opt = document.createElement('option');
-                    opt.text = "默认思索之音";
-                    opt.value = "";
+                    opt.text = '默认思索之音';
+                    opt.value = '';
                     select.appendChild(opt);
+                    selectedVoice = null;
                     return;
                 }
 
-                filterVoices.forEach(voice => {
+                const defaultVoice = pickDefaultTtsVoice(voices);
+                selectedVoice = defaultVoice;
+                const topScore = scoreTtsVoice(ranked[0]);
+
+                ranked.forEach((voice) => {
                     const opt = document.createElement('option');
                     opt.value = voice.name;
-                    opt.text = `${voice.name} (${voice.lang})`;
-                    if (voice.default || voice.name.includes('Tingting') || voice.name.includes('Google')) {
-                        opt.selected = true;
-                        selectedVoice = voice;
-                    }
+                    const recommended = scoreTtsVoice(voice) >= Math.max(35, topScore - 8);
+                    const typeLabel = voice.localService ? '本地' : '在线';
+                    opt.text = `${recommended ? '★ ' : ''}${voice.name} (${voice.lang} · ${typeLabel})`;
+                    if (defaultVoice && voice.name === defaultVoice.name) opt.selected = true;
                     select.appendChild(opt);
                 });
             }
@@ -4906,10 +4945,13 @@
 
             select.onchange = function(e) {
                 const voices = speechSynth.getVoices();
-                selectedVoice = voices.find(v => v.name === e.target.value);
-                if (speechIsPlaying) {
-                    speakParagraph(currentParaIndex);
+                selectedVoice = voices.find((voice) => voice.name === e.target.value) || null;
+                if (selectedVoice) {
+                    localStorage.setItem(TTS_VOICE_PREF_KEY, selectedVoice.name);
+                } else {
+                    localStorage.removeItem(TTS_VOICE_PREF_KEY);
                 }
+                if (speechIsPlaying) resumeSpeechFromPosition(currentParaIndex);
             };
         }
 
@@ -4933,7 +4975,12 @@
 
         function getSpeakableParagraphText(paraIdx) {
             if (!Number.isFinite(paraIdx) || paraIdx < 0 || paraIdx >= currentParagraphs.length) return '';
-            return currentParagraphs[paraIdx].replace(/\[章节\]/g, '').trim();
+            const raw = currentParagraphs[paraIdx];
+            if (isChapterPara(raw)) {
+                const title = formatChapterTitle(raw);
+                return title.length >= 2 ? title : '';
+            }
+            return raw.replace(/\[章节\]/g, '').trim();
         }
 
         function getNextSpeakableParaIndex(startIdx) {
@@ -4941,6 +4988,26 @@
                 if (getSpeakableParagraphText(i)) return i;
             }
             return currentParagraphs.length;
+        }
+
+        function getPageStartSpeakableParaIndex(pageIdx) {
+            const page = pagedLayout[pageIdx];
+            if (!page?.blocks?.length) return currentParaIndex;
+            const sorted = [...new Set(page.blocks.map((block) => block.paraIdx))].sort((a, b) => a - b);
+            for (const idx of sorted) {
+                if (getSpeakableParagraphText(idx)) return idx;
+            }
+            return sorted[0];
+        }
+
+        function resumeSpeechFromPosition(paraIdx = currentParaIndex) {
+            if (!speechIsPlaying || !speechSynth) return;
+            const idx = getNextSpeakableParaIndex(paraIdx);
+            if (idx >= currentParagraphs.length) {
+                stopSpeech();
+                return;
+            }
+            speakParagraph(idx);
         }
 
         function scheduleSpeakParagraph(idx, delayMs = 60) {
@@ -4981,9 +5048,13 @@
 
             if (selectedVoice) {
                 speechUtterance.voice = selectedVoice;
+                speechUtterance.lang = selectedVoice.lang;
+            } else {
+                speechUtterance.lang = 'zh-CN';
             }
 
             speechUtterance.rate = speechSpeed;
+            speechUtterance.pitch = 1;
 
             speechUtterance.onstart = () => {
                 if (speakToken !== ttsSpeakToken) return;
