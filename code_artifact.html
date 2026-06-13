@@ -341,8 +341,6 @@
             overflow: hidden !important;
             height: 100%;
             min-height: 100%;
-            content-visibility: auto;
-            contain: layout style paint;
         }
         /* 侧栏目录/随笔：flex 子项可滚动（避免仅 flex-col 时 display 仍为 block） */
         #catalog-panel:not(.hidden),
@@ -1072,8 +1070,11 @@
         let pagedLayoutCacheKey = '';
         let cachedPagedLayoutPages = [];
         let pagedBuildGeneration = 0;
+        let pagedLayoutBuilding = false;
         let pagedPageWidthCache = 0;
         let pagedPageHeightCache = 0;
+        let pagedResizeWidth = 0;
+        let pagedResizeHeight = 0;
         let measureSandboxEl = null;
         let catalogBuiltForBookId = null;
         let readerConfigApplyTimer = null;
@@ -1121,6 +1122,7 @@
         let viewportPointerDown = null;
         let cachedSelectionRange = null;
         let selectionCheckTimer = null;
+        let selectionGestureActive = false;
         let markingPreviewHighlight = null;
         let noteEditorMode = 'selection';
         let editingNoteId = null;
@@ -1996,7 +1998,12 @@
                         epubBook.title || baseName,
                         epubBook.author || 'EPUB 经典',
                         epubBook.text,
-                        epubBook.coverImage
+                        epubBook.coverImage,
+                        {
+                            epubToc: epubBook.epubToc,
+                            epubSpineStarts: epubBook.epubSpineStarts,
+                            epubTocSpinePaths: epubBook.epubTocSpinePaths
+                        }
                     );
                 } else if (KINDLE_EXTENSIONS.has(ext)) {
                     showToast('正在解析 Kindle / MOBI 电子书...');
@@ -2128,12 +2135,64 @@
                 .filter(Boolean);
         }
 
-        const FRONT_MATTER_TITLE_RE = /^(封面|扉页|版权|著作权|书名页|书名|前言|序言|序$|引言|致辞|献词|致谢|编者|出版|内容简介|内容提要|目录|目\s*录|contents|table\s+of\s+contents|cover|title\s*page|copyright|dedication|preface|foreword|acknowledg(e)?ments?|about\s+(the\s+)?author|colophon|imprint|publication\s+data)/i;
+        const FRONT_MATTER_TITLE_RE = /^(封面|扉页|版权|著作权|书名页|书名|前言|序言|序$|引言|致辞|献词|致谢|编者|出版|内容简介|内容提要|目录|全书目录|正文目录|目\s*录|contents?|table\s+of\s+contents|cover|title\s*page|copyright|dedication|preface|foreword|acknowledg(e)?ments?|about\s+(the\s+)?author|colophon|imprint|publication\s+data)/i;
 
         function isFrontMatterTitle(title) {
             const t = String(title || '').trim();
             if (!t) return true;
-            return FRONT_MATTER_TITLE_RE.test(t);
+            if (FRONT_MATTER_TITLE_RE.test(t)) return true;
+            const compact = t.replace(/\s+/g, '');
+            if (/^(全书|正文|本|书)?目录$/i.test(compact)) return true;
+            return false;
+        }
+
+        function countContentParas(text) {
+            return String(text || '').split('\n').map((p) => p.trim()).filter((p) => p.length > 0).length;
+        }
+
+        function isLikelyTocSpineFilename(hrefOrName) {
+            const base = String(hrefOrName || '').split('/').pop().split('#')[0].toLowerCase();
+            const stem = base.replace(/\.x?html?$/i, '').replace(/[^a-z0-9\u4e00-\u9fff]/gi, '');
+            return /^(nav|toc|contents|tableofcontents|content|目录)$/i.test(stem);
+        }
+
+        function collectEpubTocSpinePaths(tocEntries, opfDir, manifest, spine) {
+            const paths = new Set();
+            Object.values(manifest).forEach((item) => {
+                if (item.properties?.includes('nav')) {
+                    const h = normalizeZipPath(resolveManifestHref(opfDir, item.href));
+                    if (h) paths.add(h);
+                }
+            });
+            spine.forEach((idref) => {
+                const rel = manifestHref(manifest, idref);
+                if (!rel) return;
+                if (isLikelyTocSpineFilename(rel)) {
+                    paths.add(normalizeZipPath(resolveManifestHref(opfDir, rel)));
+                }
+            });
+            const inwardCounts = new Map();
+            tocEntries.forEach((entry) => {
+                if (!entry.href || isFrontMatterTitle(entry.title)) return;
+                const path = normalizeEpubHref(entry.href, opfDir).split('#')[0];
+                if (!path) return;
+                inwardCounts.set(path, (inwardCounts.get(path) || 0) + 1);
+            });
+            inwardCounts.forEach((count, path) => {
+                if (count >= 5 && isLikelyTocSpineFilename(path)) paths.add(path);
+            });
+            return paths;
+        }
+
+        function normalizeEpubTocForStorage(tocEntries, opfDir) {
+            return tocEntries
+                .filter((e) => e.title && !isFrontMatterTitle(e.title))
+                .map((e) => ({
+                    title: e.title,
+                    depth: e.depth || 1,
+                    href: normalizeEpubHref(e.href, opfDir),
+                    fragment: e.fragment || (e.href.includes('#') ? e.href.split('#').slice(1).join('#') : '')
+                }));
         }
 
         function headingSimilar(a, b) {
@@ -2350,7 +2409,7 @@
 
             const spineMeta = getAnchorMeta(anchorTitles, '__spine__')
                 || (spineChapterTitle ? { title: spineChapterTitle, depth: 1 } : null);
-            if (spineMeta?.title) {
+            if (spineMeta?.title && !isFrontMatterTitle(spineMeta.title)) {
                 out += `\n\n${formatChapterMarker(spineMeta.title, spineMeta.depth)}\n\n`;
                 skipHeading = spineMeta.title;
             }
@@ -2358,6 +2417,7 @@
             const emittedAnchors = new Set();
             const emitAnchorMarker = (key, meta) => {
                 if (!meta || emittedAnchors.has(key)) return;
+                if (isFrontMatterTitle(meta.title)) return;
                 emittedAnchors.add(key);
                 out += `\n\n${formatChapterMarker(meta.title, meta.depth)}\n\n`;
             };
@@ -2666,39 +2726,69 @@
                 tocEntries.push(...await extractEpubToc(zip, parser, opfDoc, opfDir, manifest));
             }
             const hasToc = tocEntries.length > 0;
+            const tocSpinePaths = collectEpubTocSpinePaths(tocEntries, opfDir, manifest, spine);
+            const spineStarts = {};
+            let paraOffset = 0;
 
             for (const idref of spine) {
                 const relativeHref = manifestHref(manifest, idref);
                 if (!relativeHref) continue;
 
                 const href = resolveManifestHref(opfDir, relativeHref);
+                const spinePath = normalizeZipPath(href);
+                spineStarts[spinePath] = paraOffset;
+
                 const chapterFile = findZipEntry(zip, href, relativeHref, normalizeZipPath(opfDir + relativeHref));
                 if (!chapterFile) continue;
 
                 const htmlText = await chapterFile.async("text");
                 const htmlDoc = parser.parseFromString(htmlText, "text/html");
+                const isTocSpine = tocSpinePaths.has(spinePath);
+                let chapterOut = '';
 
-                if (hasToc) {
+                if (isTocSpine) {
+                    chapterOut = appendEpubChapterHtml(htmlDoc, {});
+                } else if (hasToc) {
                     const anchorTitles = collectAnchorTitlesForSpine(tocEntries, opfDir, href, relativeHref);
                     const hasChapterMarkers = getAnchorMeta(anchorTitles, '__spine__') || anchorTitles.size > 0;
                     if (hasChapterMarkers) {
-                        fullText += appendEpubChapterHtml(htmlDoc, { anchorTitles });
-                        continue;
+                        chapterOut = appendEpubChapterHtml(htmlDoc, { anchorTitles });
+                    } else {
+                        const firstHeading = htmlDoc.querySelector('h1, h2, h3');
+                        const headingText = firstHeading?.textContent?.trim() || '';
+                        const spineTitle = headingText && !isFrontMatterTitle(headingText) && headingText.length <= 80
+                            ? headingText
+                            : null;
+                        chapterOut = appendEpubChapterHtml(htmlDoc, { spineChapterTitle: spineTitle });
                     }
+                } else {
+                    const firstHeading = htmlDoc.querySelector('h1, h2, h3');
+                    const headingText = firstHeading?.textContent?.trim() || '';
+                    const spineTitle = headingText && !isFrontMatterTitle(headingText) && headingText.length <= 80
+                        ? headingText
+                        : null;
+                    chapterOut = appendEpubChapterHtml(htmlDoc, { spineChapterTitle: spineTitle });
                 }
 
-                const firstHeading = htmlDoc.querySelector('h1, h2, h3');
-                const headingText = firstHeading?.textContent?.trim() || '';
-                const spineTitle = headingText && !isFrontMatterTitle(headingText) && headingText.length <= 80
-                    ? headingText
-                    : null;
-                fullText += appendEpubChapterHtml(htmlDoc, { spineChapterTitle: spineTitle });
+                fullText += chapterOut;
+                paraOffset += countContentParas(chapterOut);
             }
 
-            return { text: fullText, title, author, coverImage };
+            const epubToc = hasToc ? normalizeEpubTocForStorage(tocEntries, opfDir) : [];
+            const epubTocSpinePaths = [...tocSpinePaths];
+
+            return {
+                text: fullText,
+                title,
+                author,
+                coverImage,
+                epubToc,
+                epubSpineStarts: spineStarts,
+                epubTocSpinePaths
+            };
         }
 
-        async function addBookToShelf(title, author, content, coverImage = null) {
+        async function addBookToShelf(title, author, content, coverImage = null, epubMeta = null) {
             const newBook = {
                 id: 'book_' + Date.now(),
                 title: title,
@@ -2708,7 +2798,10 @@
                 progress: 0,
                 lastReadPara: 0,
                 dateAdded: new Date().toISOString(),
-                content: content
+                content: content,
+                epubToc: epubMeta?.epubToc || null,
+                epubSpineStarts: epubMeta?.epubSpineStarts || null,
+                epubTocSpinePaths: epubMeta?.epubTocSpinePaths || null
             };
 
             db.books.unshift(newBook);
@@ -2922,10 +3015,20 @@
 
         function resolveStartParaIndex(book, startParaIndex) {
             if (startParaIndex != null) return startParaIndex;
+            const neverRead = (book.progress == null || book.progress <= 0)
+                && (book.lastReadPara == null || book.lastReadPara <= 0);
+            if (neverRead) return 0;
             if (book.lastReadPara != null && book.lastReadPara >= 0) return book.lastReadPara;
             const hist = db.history.find(h => h.bookId === book.id);
             if (hist && hist.paraIndex >= 0) return hist.paraIndex;
             return 0;
+        }
+
+        function resetReaderViewportScroll() {
+            const viewport = document.getElementById('reader-viewport');
+            if (!viewport) return;
+            viewport.scrollLeft = 0;
+            viewport.scrollTop = 0;
         }
 
         function getCurrentChapterParaIndex() {
@@ -3015,7 +3118,7 @@
         }
 
         function computeReadingProgressPercent(paraIdx = currentParaIndex) {
-            if (readerConfig.mode === 'paged' && pagedLayout.length > 1) {
+            if (readerConfig.mode === 'paged' && pagedLayout.length > 1 && !pagedLayoutBuilding) {
                 const pageIdx = Math.max(0, Math.min(pagedLayout.length - 1, currentPageIndex));
                 return (pageIdx / (pagedLayout.length - 1)) * 100;
             }
@@ -3092,6 +3195,8 @@
         function openReader(book, startParaIndex = null) {
             currentBook = book;
             invalidatePagedLayoutCache();
+            pagedBuildGeneration++;
+            currentPageIndex = 0;
             catalogBuiltForBookId = null;
             
             currentParagraphs = book.content.split('\n')
@@ -3099,6 +3204,8 @@
                 .filter(p => p.length > 0);
 
             currentParaIndex = resolveStartParaIndex(book, startParaIndex);
+            readerJumpLockUntil = Date.now() + 8000;
+            pagedLayoutBuilding = false;
 
             document.getElementById('reader-book-title').innerText = book.title;
             if (document.documentElement.classList.contains('dark')) {
@@ -3125,6 +3232,7 @@
             setupReaderOverlayScrollGuard();
             setupPagedResizeListener();
             updateMediaSession();
+            updateReaderProgressLabel();
         }
 
         function setupReaderOverlayScrollGuard() {
@@ -3182,16 +3290,20 @@
             return true;
         }
 
+        function isInlineChapterTitleLine(trimmed) {
+            if (!trimmed || trimmed.length > 100) return false;
+            if (/^第[0-9零一二三四五六七八九十百千]+[章节](?:\s+[^第\n][^\n]{0,47}|[：:．.][^\n]{0,47})?$/.test(trimmed)) {
+                return !isFrontMatterTitle(trimmed);
+            }
+            if (/^Chapter\s+\d+([:.\s-][^\n]{0,47}|$)/i.test(trimmed)) {
+                return !isFrontMatterTitle(trimmed);
+            }
+            return false;
+        }
+
         function detectInlineChapterTitle(para) {
             const trimmed = String(para || '').trim();
-            if (!trimmed || trimmed.length > 100) return null;
-            if (/^第[0-9零一二三四五六七八九十百千]+[章节][^\n]{0,48}$/.test(trimmed) && !isFrontMatterTitle(trimmed)) {
-                return trimmed;
-            }
-            if (/^Chapter\s+\d+([:.\s-]|$)/i.test(trimmed) && !isFrontMatterTitle(trimmed)) {
-                return trimmed;
-            }
-            return null;
+            return isInlineChapterTitleLine(trimmed) ? trimmed : null;
         }
 
         function getCatalogEntryTitle(para) {
@@ -3199,15 +3311,134 @@
             return detectInlineChapterTitle(para);
         }
 
+        function getNextSpineStartPara(spineStarts, afterIdx) {
+            if (!spineStarts) return currentParagraphs.length;
+            let next = currentParagraphs.length;
+            Object.values(spineStarts).forEach((start) => {
+                if (start > afterIdx && start < next) next = start;
+            });
+            return next;
+        }
+
+        function findParaByChapterTitle(title) {
+            for (let i = 0; i < currentParagraphs.length; i++) {
+                if (!isChapterPara(currentParagraphs[i])) continue;
+                const meta = getChapterMarkerMeta(currentParagraphs[i]);
+                if (meta && headingSimilar(meta.title, title)) return i;
+            }
+            return null;
+        }
+
+        function resolveEpubTocParaIndex(entry) {
+            const book = currentBook;
+            if (!book?.epubSpineStarts) return findParaByChapterTitle(entry.title);
+
+            const path = (entry.href || '').split('#')[0];
+            if (path && book.epubTocSpinePaths?.includes(path)) return null;
+
+            const spineStart = book.epubSpineStarts[path];
+            if (spineStart == null) return findParaByChapterTitle(entry.title);
+
+            const spineEnd = getNextSpineStartPara(book.epubSpineStarts, spineStart);
+            if (entry.fragment) {
+                for (let i = spineStart; i < spineEnd; i++) {
+                    if (!isChapterPara(currentParagraphs[i])) continue;
+                    const meta = getChapterMarkerMeta(currentParagraphs[i]);
+                    if (meta && headingSimilar(meta.title, entry.title)) return i;
+                }
+            }
+            return spineStart;
+        }
+
+        function paraHasLaterSimilarChapterTitle(title, startIdx, skipIdx) {
+            for (let j = startIdx; j < currentParagraphs.length; j++) {
+                if (j === skipIdx) continue;
+                const laterTitle = getCatalogEntryTitle(currentParagraphs[j]);
+                if (laterTitle && headingSimilar(title, laterTitle)) return true;
+                if (isChapterPara(currentParagraphs[j])) {
+                    const meta = getChapterMarkerMeta(currentParagraphs[j]);
+                    if (meta?.title && headingSimilar(title, meta.title)) return true;
+                }
+            }
+            return false;
+        }
+
+        function getOpeningTocRegionEnd() {
+            if (!currentParagraphs.length) return -1;
+
+            const openingMarkers = [];
+            let clusterEnd = 0;
+            const scanLimit = Math.min(currentParagraphs.length, 120);
+
+            for (let i = 0; i < scanLimit; i++) {
+                const para = currentParagraphs[i];
+                const title = getCatalogEntryTitle(para);
+                if (title) {
+                    openingMarkers.push({ idx: i, title });
+                    clusterEnd = i + 1;
+                    continue;
+                }
+                if (para.length >= 180) {
+                    clusterEnd = i;
+                    break;
+                }
+                if (openingMarkers.length && i - openingMarkers[openingMarkers.length - 1].idx > 6) {
+                    clusterEnd = i;
+                    break;
+                }
+                clusterEnd = i + 1;
+            }
+
+            if (openingMarkers.length < 2) return -1;
+
+            const hasDuplicateLater = openingMarkers.some((m) =>
+                paraHasLaterSimilarChapterTitle(m.title, clusterEnd, m.idx)
+            );
+            if (!hasDuplicateLater) return -1;
+
+            return clusterEnd;
+        }
+
+        function isInOpeningTocRegion(paraIdx) {
+            const end = getOpeningTocRegionEnd();
+            return end > 0 && paraIdx < end;
+        }
+
+        function collectCatalogItems() {
+            const items = [];
+            const epubToc = currentBook?.epubToc;
+            if (epubToc?.length) {
+                const seen = new Set();
+                epubToc.forEach((entry) => {
+                    if (!entry.title || isFrontMatterTitle(entry.title)) return;
+                    const path = (entry.href || '').split('#')[0];
+                    if (path && currentBook.epubTocSpinePaths?.includes(path)) return;
+                    const dedupeKey = `${entry.depth || 1}|${entry.title}|${entry.href}`;
+                    if (seen.has(dedupeKey)) return;
+                    seen.add(dedupeKey);
+                    const idx = resolveEpubTocParaIndex(entry);
+                    if (idx == null || idx < 0) return;
+                    items.push({ title: entry.title, depth: entry.depth || 1, idx });
+                });
+                return items;
+            }
+
+            currentParagraphs.forEach((para, idx) => {
+                const title = getCatalogEntryTitle(para);
+                if (!title) return;
+                if (isInOpeningTocRegion(idx)) return;
+                const depth = isChapterPara(para) ? getCatalogEntryDepth(para) : 1;
+                items.push({ title, depth, idx });
+            });
+            return items;
+        }
+
         function normalizeTxtChapterMarkers(text) {
             return String(text || '').split('\n').map((line) => {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
                 if (trimmed.startsWith('第[章节]')) return trimmed;
-                if (/^第[0-9零一二三四五六七八九十百千]+[章节][^\n]{0,48}$/.test(trimmed)) {
-                    return `第[章节] ${trimmed}`;
-                }
-                if (/^Chapter\s+\d+([:.\s-]|$)/i.test(trimmed) && trimmed.length <= 80) {
+                if (isInlineChapterTitleLine(trimmed)) {
                     return `第[章节] ${trimmed}`;
                 }
                 return line;
@@ -3408,8 +3639,13 @@
         function invalidatePagedLayoutCache() {
             pagedLayoutCacheKey = '';
             cachedPagedLayoutPages = [];
+            pagedLayout = [];
             pagedPageWidthCache = 0;
             pagedPageHeightCache = 0;
+        }
+
+        function isPagedLayoutPending() {
+            return readerConfig.mode === 'paged' && (pagedLayoutBuilding || !pagedLayout.length);
         }
 
         function resetMeasureSandbox(sandbox) {
@@ -3425,11 +3661,14 @@
         }
 
         function tryAppendBlockToSandbox(sandbox, blockEl, pageBlocks) {
-            if (!pageBlocks.length) resetMeasureSandbox(sandbox);
-            sandbox.appendChild(blockEl.cloneNode(true));
-            const fits = sandbox.scrollHeight <= sandbox.clientHeight + 2;
-            if (!fits) sandbox.lastChild?.remove();
-            return fits;
+            return measureBlocksFit(sandbox, [...pageBlocks, { el: blockEl }]);
+        }
+
+        function syncSandboxToPageBlocks(sandbox, pageBlocks) {
+            resetMeasureSandbox(sandbox);
+            for (const block of pageBlocks) {
+                sandbox.appendChild(block.el.cloneNode(true));
+            }
         }
 
         function paraHasPagedNotes(paraIdx, bookNotes) {
@@ -3530,6 +3769,7 @@
                 if (pageBlocks.length) {
                     pages.push({ blocks: pageBlocks });
                     pageBlocks = [];
+                    resetMeasureSandbox(sandbox);
                 }
             }
 
@@ -3575,6 +3815,7 @@
                     const chunkBlock = { paraIdx: idx, el: chunkEl, isChapter: false };
                     if (!tryAppend(chunkBlock)) pushPage();
                     pageBlocks.push(chunkBlock);
+                    syncSandboxToPageBlocks(sandbox, pageBlocks);
                 }
             }
 
@@ -3612,7 +3853,7 @@
             if (pagedLayout.length && document.querySelector('#reader-content .paged-page')) return true;
 
             const content = document.getElementById('reader-content');
-            const isBuilding = content?.querySelector('p')?.textContent?.includes('正在排版');
+            const isBuilding = pagedLayoutBuilding || content?.textContent?.includes('正在排版');
             if (!isBuilding && readerConfig.mode === 'paged') {
                 renderReaderContent({ restorePosition: true });
             }
@@ -3721,15 +3962,31 @@
         function updateReaderProgressLabel() {
             const pageLabel = document.getElementById('reader-page-label');
             const percentEl = document.getElementById('reader-percent');
+            const indicator = document.getElementById('reading-mode-indicator');
             const pct = Math.round(computeReadingProgressPercent());
 
             if (percentEl) {
-                percentEl.innerText = `${pct}%`;
+                percentEl.innerText = isPagedLayoutPending() ? '…' : `${pct}%`;
+            }
+
+            if (indicator) {
+                if (readerConfig.mode === 'paged') {
+                    indicator.innerText = isPagedLayoutPending()
+                        ? '当前状态：分页排版中'
+                        : '当前状态：触屏横向物理翻页';
+                } else {
+                    indicator.innerText = '当前状态：纵向滚动阅览';
+                }
             }
 
             if (!pageLabel) return;
 
-            if (readerConfig.mode === 'paged' && pagedLayout.length > 0) {
+            if (readerConfig.mode === 'paged') {
+                if (isPagedLayoutPending()) {
+                    pageLabel.innerText = '正在排版…';
+                    pageLabel.title = '分页排版中，请稍候';
+                    return;
+                }
                 const total = pagedLayout.length;
                 const current = Math.min(total, Math.max(1, currentPageIndex + 1));
                 pageLabel.innerText = `第 ${current} / ${total} 页`;
@@ -3799,13 +4056,14 @@
             const content = document.getElementById('reader-content');
 
             if (readerConfig.mode === 'scroll') {
+                pagedLayoutBuilding = false;
                 pagedLayout = [];
                 document.getElementById('reader-content-spacer').classList.remove('hidden');
                 viewport.classList.remove('paged-mode', 'overflow-x-auto', 'overflow-y-hidden');
                 viewport.classList.add('overflow-y-auto');
                 content.className = "max-w-2xl mx-auto leading-relaxed space-y-6 break-all font-serif";
                 renderScrollContentChunked(container, bookNotes, () => {
-                    updateSliderProgress();
+                    updateSliderProgress({ syncFromViewport: false });
                     if (readerConfig.mode !== 'scroll') return;
                     if (pendingJumpParaIdx != null) {
                         const targetIdx = pendingJumpParaIdx;
@@ -3814,6 +4072,9 @@
                         return;
                     }
                     scrollToParagraph(currentParaIndex, 'auto');
+                    requestAnimationFrame(() => {
+                        readerJumpLockUntil = Date.now() + 300;
+                    });
                 });
             } else {
                 document.getElementById('reader-content-spacer').classList.add('hidden');
@@ -3823,7 +4084,7 @@
                 renderPagedContentAsync(container, bookNotes, options);
             }
 
-            updateSliderProgress();
+            updateSliderProgress({ syncFromViewport: false });
             if (catalogBuiltForBookId !== currentBook?.id) {
                 catalogBuiltForBookId = currentBook?.id;
                 scheduleIdleTask(() => {
@@ -4008,6 +4269,8 @@
 
         function renderPagedContentAsync(container, bookNotes, options = {}) {
             const buildGen = ++pagedBuildGeneration;
+            pagedLayoutBuilding = true;
+            updateReaderProgressLabel();
             const showLoading = !options.keepVisible;
             if (showLoading) {
                 container.innerHTML = '<p class="text-zinc-400 text-center font-bold py-20">正在排版，请稍候…</p>';
@@ -4028,10 +4291,16 @@
                 });
                 container.appendChild(frag);
 
+                pagedLayoutBuilding = false;
                 pagedPageWidthCache = 0;
                 pagedPageHeightCache = 0;
                 currentPageIndex = getPageIndexForParagraph(currentParaIndex);
                 syncPagedPageDimensions();
+                const viewport = document.getElementById('reader-viewport');
+                if (viewport) {
+                    pagedResizeWidth = viewport.clientWidth;
+                    pagedResizeHeight = viewport.clientHeight;
+                }
                 updatePagedIndicator();
                 if (pendingJumpParaIdx != null) {
                     const targetIdx = pendingJumpParaIdx;
@@ -4040,6 +4309,10 @@
                 } else if (options.restorePosition !== false) {
                     restorePagedPosition();
                 }
+                updateSliderProgress({ syncFromViewport: false });
+                requestAnimationFrame(() => {
+                    readerJumpLockUntil = Date.now() + 300;
+                });
             };
 
             const attemptBuild = async (retry = 0) => {
@@ -4047,7 +4320,9 @@
 
                 const viewport = document.getElementById('reader-viewport');
                 if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) {
-                    if (retry < 40) requestAnimationFrame(() => attemptBuild(retry + 1));
+                    if (retry < 40 && buildGen === pagedBuildGeneration) {
+                        requestAnimationFrame(() => attemptBuild(retry + 1));
+                    }
                     return;
                 }
 
@@ -4055,7 +4330,12 @@
                 if (buildGen !== pagedBuildGeneration) return;
 
                 if (!layout.length) {
-                    if (retry < 40) requestAnimationFrame(() => attemptBuild(retry + 1));
+                    if (retry < 40 && buildGen === pagedBuildGeneration) {
+                        requestAnimationFrame(() => attemptBuild(retry + 1));
+                    } else if (buildGen === pagedBuildGeneration) {
+                        pagedLayoutBuilding = false;
+                        updateReaderProgressLabel();
+                    }
                     return;
                 }
 
@@ -4140,14 +4420,54 @@
         }
 
         function findParagraphElement(range) {
-            const node = range.commonAncestorContainer;
-            if (node.nodeType === Node.TEXT_NODE) {
-                return node.parentElement?.closest('[data-para-idx]') ?? null;
+            return getParagraphElementAt(range, 'start');
+        }
+
+        function getParagraphElementAt(range, edge = 'start') {
+            const container = edge === 'start' ? range.startContainer : range.endContainer;
+            const offset = edge === 'start' ? range.startOffset : range.endOffset;
+            if (!container) return null;
+
+            if (container.nodeType === Node.TEXT_NODE) {
+                return container.parentElement?.closest('[data-para-idx]') ?? null;
             }
-            if (node.nodeType === Node.ELEMENT_NODE && node.matches?.('[data-para-idx]')) {
-                return node;
+
+            if (container.nodeType === Node.ELEMENT_NODE) {
+                if (container.matches?.('[data-para-idx]')) return container;
+                const child = container.childNodes[offset];
+                if (child) {
+                    if (child.nodeType === Node.TEXT_NODE) {
+                        return child.parentElement?.closest('[data-para-idx]') ?? null;
+                    }
+                    if (child.matches?.('[data-para-idx]')) return child;
+                    return child.closest?.('[data-para-idx]') ?? null;
+                }
+                return container.closest?.('[data-para-idx]') ?? null;
             }
-            return node.closest?.('[data-para-idx]') ?? null;
+
+            return null;
+        }
+
+        function getParagraphTextOffset(paraIdx, range, edge = 'start') {
+            const hostEl = getParagraphElementAt(range, edge);
+            if (!hostEl) return 0;
+
+            const hostIdx = parseInt(hostEl.getAttribute('data-para-idx'), 10);
+            if (!Number.isFinite(hostIdx) || hostIdx !== paraIdx) return 0;
+
+            const container = edge === 'start' ? range.startContainer : range.endContainer;
+            const offset = edge === 'start' ? range.startOffset : range.endOffset;
+            const localOffset = getDomPointOffset(hostEl, container, offset);
+
+            let accumulated = 0;
+            const chunkEls = document.querySelectorAll(`#reader-content [data-para-idx="${paraIdx}"]`);
+            for (const el of chunkEls) {
+                if (el === hostEl) {
+                    return accumulated + localOffset;
+                }
+                accumulated += (el.textContent || '').length;
+            }
+            return accumulated + localOffset;
         }
 
         function hasActiveTextSelection() {
@@ -4185,12 +4505,25 @@
             if (!selectedText) return null;
 
             const paraText = currentParagraphs[paraIdx] ?? '';
-            const domText = paragraphEl.textContent ?? '';
-            const hint = getDomPointOffset(paragraphEl, range.startContainer, range.startOffset);
+            const startHint = getParagraphTextOffset(paraIdx, range, 'start');
+            const endHint = getParagraphTextOffset(paraIdx, range, 'end');
+            const endParaIdx = parseInt(getParagraphElementAt(range, 'end')?.getAttribute('data-para-idx'), 10);
 
-            let start = findTextInParagraph(paraText, selectedText, hint);
+            if (endParaIdx === paraIdx && endHint > startHint) {
+                const domSlice = paraText.substring(startHint, endHint) || selectedText;
+                return {
+                    paraIndex: paraIdx,
+                    selectedText: domSlice,
+                    anchorOffset: startHint,
+                    focusOffset: endHint
+                };
+            }
+
+            const domText = paragraphEl.textContent ?? '';
+
+            let start = findTextInParagraph(paraText, selectedText, startHint);
             if (start === null && domText && domText !== paraText) {
-                const domStart = findTextInParagraph(domText, selectedText, hint);
+                const domStart = findTextInParagraph(domText, selectedText, startHint);
                 if (domStart !== null && domText.length === paraText.length) {
                     start = domStart;
                 }
@@ -4205,9 +4538,8 @@
                 };
             }
 
-            const endHint = getDomPointOffset(paragraphEl, range.endContainer, range.endOffset);
-            const safeStart = Math.max(0, Math.min(hint, endHint, paraText.length));
-            const safeEnd = Math.max(safeStart, Math.min(Math.max(hint, endHint), paraText.length));
+            const safeStart = Math.max(0, Math.min(startHint, endHint, paraText.length));
+            const safeEnd = Math.max(safeStart, Math.min(Math.max(startHint, endHint), paraText.length));
             const fallbackText = paraText.substring(safeStart, safeEnd) || selectedText;
 
             return {
@@ -4322,15 +4654,27 @@
             const selectedText = range.toString();
             if (!selectedText) return false;
 
-            const parentP = findParagraphElement(range);
-            if (!parentP) return false;
+            const startPara = getParagraphElementAt(range, 'start');
+            const endPara = getParagraphElementAt(range, 'end');
+            if (!startPara) return false;
 
-            const resolved = resolveParagraphSelection(parentP, range);
+            const startParaIdx = parseInt(startPara.getAttribute('data-para-idx'), 10);
+            const endParaIdx = parseInt(endPara?.getAttribute('data-para-idx'), 10);
+
+            let workingRange = range;
+            if (endPara && Number.isFinite(endParaIdx) && endParaIdx !== startParaIdx) {
+                workingRange = range.cloneRange();
+                const sameParaChunks = document.querySelectorAll(`#reader-content [data-para-idx="${startParaIdx}"]`);
+                const lastChunk = sameParaChunks[sameParaChunks.length - 1] || startPara;
+                workingRange.setEnd(lastChunk, lastChunk.childNodes.length);
+            }
+
+            const resolved = resolveParagraphSelection(startPara, workingRange);
             if (!resolved || !resolved.selectedText) return false;
 
             currentSelection = resolved;
-            cachedSelectionRange = range.cloneRange();
-            showSelectionPopover(range);
+            cachedSelectionRange = workingRange.cloneRange();
+            showSelectionPopover(cachedSelectionRange);
             return true;
         }
 
@@ -4345,14 +4689,25 @@
             return currentSelection.paraIndex !== null;
         }
 
+        function finishSelectionGesture() {
+            const wasGesture = selectionGestureActive;
+            selectionGestureActive = false;
+            if (wasGesture || hasActiveTextSelection()) {
+                scheduleSelectionCheck(80);
+            }
+        }
+
         function setupSelectionListeners() {
             const viewport = document.getElementById('reader-viewport');
             const popover = document.getElementById('selection-popover');
             if (!viewport || viewport.dataset.selectionBound) return;
             viewport.dataset.selectionBound = 'true';
 
-            viewport.addEventListener('mouseup', () => scheduleSelectionCheck(60));
-            viewport.addEventListener('touchend', () => scheduleSelectionCheck(120), { passive: true });
+            viewport.addEventListener('mouseup', finishSelectionGesture);
+            viewport.addEventListener('touchend', finishSelectionGesture, { passive: true });
+            viewport.addEventListener('touchcancel', finishSelectionGesture, { passive: true });
+            document.addEventListener('mouseup', finishSelectionGesture);
+            document.addEventListener('touchend', finishSelectionGesture, { passive: true });
 
             document.addEventListener('selectionchange', () => {
                 if (!isReaderOpen()) return;
@@ -4360,8 +4715,9 @@
                     suppressNativeSelectionUI();
                     return;
                 }
+                if (selectionGestureActive) return;
                 if (!hasActiveTextSelection()) return;
-                scheduleSelectionCheck(100);
+                scheduleSelectionCheck(150);
             });
 
             const blockNativeReaderMenu = (e) => {
@@ -4382,6 +4738,15 @@
 
             viewport.addEventListener('mousedown', (e) => {
                 viewportPointerDown = { x: e.clientX, y: e.clientY };
+                if (e.target.closest('[data-para-idx]')) {
+                    selectionGestureActive = true;
+                }
+            }, true);
+
+            viewport.addEventListener('pointerdown', (e) => {
+                if (e.pointerType === 'touch' && e.target.closest('[data-para-idx]')) {
+                    selectionGestureActive = true;
+                }
             }, true);
 
             viewport.addEventListener('click', (e) => {
@@ -5013,6 +5378,14 @@
                 if (!currentBook || readerConfig.mode !== 'paged') return;
                 clearTimeout(pagedResizeTimer);
                 pagedResizeTimer = setTimeout(() => {
+                    const viewport = document.getElementById('reader-viewport');
+                    if (!viewport) return;
+                    const w = viewport.clientWidth;
+                    const h = viewport.clientHeight;
+                    if (w <= 0 || h <= 0) return;
+                    if (w === pagedResizeWidth && h === pagedResizeHeight) return;
+                    pagedResizeWidth = w;
+                    pagedResizeHeight = h;
                     const para = currentParaIndex;
                     invalidatePagedLayoutCache();
                     pagedBuildGeneration++;
@@ -5200,24 +5573,24 @@
             list.innerHTML = '';
 
             const currentChapterIdx = getCurrentChapterParaIndex();
+            const items = collectCatalogItems();
             let count = 0;
-            currentParagraphs.forEach((para, idx) => {
-                const meta = getChapterMarkerMeta(para);
-                const inlineTitle = meta ? null : detectInlineChapterTitle(para);
-                const title = meta?.title || inlineTitle;
-                if (!title) return;
-                const depth = meta?.depth || 1;
+
+            items.forEach((item, i) => {
+                const nextIdx = items[i + 1]?.idx ?? currentParagraphs.length;
+                const isCurrent = currentChapterIdx >= 0
+                    ? item.idx === currentChapterIdx
+                    : currentParaIndex >= item.idx && currentParaIndex < nextIdx;
                 count++;
-                const isCurrent = idx === currentChapterIdx;
-                const item = document.createElement('button');
-                item.dataset.chapterIdx = idx;
-                item.dataset.catalogDepth = depth;
-                item.dataset.catalogCurrent = isCurrent ? 'true' : 'false';
-                item.className = getCatalogItemClass(isCurrent, depth);
-                item.style.paddingLeft = `${12 + (depth - 1) * 14}px`;
-                item.innerText = title;
-                item.onclick = () => jumpToChapterFromCatalog(idx);
-                list.appendChild(item);
+                const itemEl = document.createElement('button');
+                itemEl.dataset.chapterIdx = item.idx;
+                itemEl.dataset.catalogDepth = item.depth;
+                itemEl.dataset.catalogCurrent = isCurrent ? 'true' : 'false';
+                itemEl.className = getCatalogItemClass(isCurrent, item.depth);
+                itemEl.style.paddingLeft = `${12 + (item.depth - 1) * 14}px`;
+                itemEl.innerText = item.title;
+                itemEl.onclick = () => jumpToChapterFromCatalog(item.idx);
+                list.appendChild(itemEl);
             });
 
             if (count === 0) {
@@ -5340,12 +5713,9 @@
                 viewport.classList.add('overflow-y-auto');
             }
 
+            resetReaderViewportScroll();
             renderReaderContent();
             applyViewportTheme(viewport);
-
-            if (currentBook && readerConfig.mode === 'paged') {
-                restorePagedPosition();
-            }
         }
 
         function changeReaderTheme(theme) {
