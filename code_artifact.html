@@ -36,6 +36,7 @@
         }
     </script>
     <script src="/vendor/jszip.min.js"></script>
+    <script src="/scripts/reader-math.js"></script>
     <!-- Kindle / MOBI 解析引擎 (foliate-js) -->
     <script type="module">
         try {
@@ -187,6 +188,10 @@
         }
         ::highlight(marking-preview) {
             background-color: rgba(99, 102, 241, 0.32);
+            color: inherit;
+        }
+        ::highlight(speech-word) {
+            background-color: rgba(239, 68, 68, 0.42);
             color: inherit;
         }
         #selection-marking-backdrop {
@@ -494,7 +499,7 @@
 </head>
 <body class="text-zinc-800 font-sans transition-colors duration-300 overflow-hidden min-h-dvh h-dvh w-screen flex flex-col dark:bg-zinc-950 dark:text-zinc-200">
 
-    <audio id="silent-player" loop src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA" class="hidden"></audio>
+    <audio id="silent-player" loop playsinline webkit-playsinline x-webkit-airplay="allow" preload="auto" style="position:fixed;width:0;height:0;opacity:0;pointer-events:none" aria-hidden="true"></audio>
 
     <div id="splash-screen" class="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-zinc-950 transition-opacity duration-1000">
         <div class="flex flex-col items-center text-center px-8 space-y-10 animate-in fade-in zoom-in duration-1000">
@@ -871,11 +876,11 @@
                     <div>
                         <span class="text-zinc-400 font-bold block mb-2.5">翻阅形式</span>
                         <div class="grid grid-cols-2 gap-3">
-                            <button onclick="changeReadingMode('scroll')" id="mode-scroll-btn" class="py-3 rounded-2xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1">
+                            <button onclick="changeReadingMode('scroll')" id="mode-scroll-btn" class="py-3 rounded-2xl border border-zinc-200 text-zinc-500 dark:border-zinc-700 font-bold active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1">
                                 <i data-lucide="arrow-down" class="w-4 h-4"></i>
                                 <span>纵向连贯滚动</span>
                             </button>
-                            <button onclick="changeReadingMode('paged')" id="mode-paged-btn" class="py-3 rounded-2xl border border-zinc-200 text-zinc-500 dark:border-zinc-700 font-bold active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1">
+                            <button onclick="changeReadingMode('paged')" id="mode-paged-btn" class="py-3 rounded-2xl border border-indigo-600 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 font-black active:scale-95 transition-transform flex items-center justify-center space-x-1.5 flex-1">
                                 <i data-lucide="arrow-left-right" class="w-4 h-4"></i>
                                 <span>触屏物理翻页</span>
                             </button>
@@ -1100,13 +1105,23 @@
         let ttsActiveIndex = null;
         let ttsSpeakTimer = null;
         let ttsSpeakToken = 0;
+        let ttsAudioContext = null;
+        let ttsKeepAliveNode = null;
+        let ttsKeepAliveTimer = null;
+        let ttsChunkEndIdx = null;
+        let ttsChunkSegments = null;
+        let ttsCurrentChunkText = '';
+        let ttsLastBoundaryAt = 0;
+        let ttsLastSpeechAt = 0;
+        let ttsSilentUrl = null;
         const TTS_VOICE_PREF_KEY = 'reader_tts_voice_v1';
+        const TTS_CHUNK_MAX_CHARS = 1400;
 
         let readerConfig = {
             theme: 'light',
             fontSize: 18,
             fontFamily: 'sans',
-            mode: 'scroll',
+            mode: 'paged',
             pageMargin: 32
         };
 
@@ -1376,6 +1391,21 @@
             setupSelectionListeners();
             setupReaderOverlayScrollGuard();
             document.addEventListener('visibilitychange', handleReadingVisibilityChange);
+            document.addEventListener('pagehide', handleTtsPageHide);
+            document.addEventListener('pageshow', handleTtsPageShow);
+            window.addEventListener('blur', handleTtsWindowBlur);
+            window.addEventListener('focus', handleTtsWindowFocus);
+            initSilentPlayer();
+            registerServiceWorker();
+        }
+
+        async function registerServiceWorker() {
+            if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+            try {
+                await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+            } catch (err) {
+                console.warn('Service Worker 注册失败:', err);
+            }
         }
 
         // 核心导航控制切换 Tab 板块函数
@@ -3014,13 +3044,17 @@
         }
 
         function resolveStartParaIndex(book, startParaIndex) {
+            const hist = db.history.find(h => h.bookId === book.id);
+            const historyPara = hist && hist.paraIndex >= 0 ? hist.paraIndex : null;
+            if (window.ReaderMath) {
+                return ReaderMath.resolveStartParaIndex(book, startParaIndex, historyPara);
+            }
             if (startParaIndex != null) return startParaIndex;
             const neverRead = (book.progress == null || book.progress <= 0)
                 && (book.lastReadPara == null || book.lastReadPara <= 0);
             if (neverRead) return 0;
             if (book.lastReadPara != null && book.lastReadPara >= 0) return book.lastReadPara;
-            const hist = db.history.find(h => h.bookId === book.id);
-            if (hist && hist.paraIndex >= 0) return hist.paraIndex;
+            if (historyPara != null) return historyPara;
             return 0;
         }
 
@@ -3037,6 +3071,48 @@
                 if (isChapterPara(currentParagraphs[i])) chapterIdx = i;
             }
             return chapterIdx;
+        }
+
+        function getScrollViewportPageInfo() {
+            const viewport = document.getElementById('reader-viewport');
+            if (!viewport) return { current: 1, total: 1 };
+            if (window.ReaderMath) {
+                return ReaderMath.computeScrollPageInfo(
+                    viewport.scrollTop,
+                    viewport.scrollHeight,
+                    viewport.clientHeight
+                );
+            }
+            const pageHeight = Math.max(1, viewport.clientHeight);
+            const scrollHeight = Math.max(pageHeight, viewport.scrollHeight);
+            const total = Math.max(1, Math.ceil(scrollHeight / pageHeight));
+            const maxScrollTop = Math.max(0, scrollHeight - pageHeight);
+            const current = maxScrollTop <= 0
+                ? 1
+                : Math.min(total, Math.max(1, Math.floor((viewport.scrollTop / maxScrollTop) * (total - 1)) + 1));
+            return { current, total };
+        }
+
+        function scrollToViewportPage(pageNum, behavior = 'smooth') {
+            const viewport = document.getElementById('reader-viewport');
+            if (!viewport) return;
+            const { total } = getScrollViewportPageInfo();
+            const safePage = Math.min(total, Math.max(1, pageNum));
+            const pageHeight = Math.max(1, viewport.clientHeight);
+            const maxScrollTop = Math.max(0, viewport.scrollHeight - pageHeight);
+            const scrollTop = total <= 1 ? 0 : ((safePage - 1) / (total - 1)) * maxScrollTop;
+            viewport.scrollTo({ top: scrollTop, behavior });
+            currentParaIndex = getParaIndexFromScrollViewport();
+            requestAnimationFrame(() => updateReaderProgressLabel());
+        }
+
+        function shouldUseChapterStyle(para) {
+            return isChapterPara(para) || Boolean(detectInlineChapterTitle(para));
+        }
+
+        function getChapterDisplayTitle(para) {
+            if (isChapterPara(para)) return formatChapterTitle(para);
+            return detectInlineChapterTitle(para) || para.trim();
         }
 
         function getParaIndexFromScrollViewport() {
@@ -3122,6 +3198,13 @@
                 const pageIdx = Math.max(0, Math.min(pagedLayout.length - 1, currentPageIndex));
                 return (pageIdx / (pagedLayout.length - 1)) * 100;
             }
+            if (readerConfig.mode === 'scroll') {
+                const { current, total } = getScrollViewportPageInfo();
+                if (window.ReaderMath) {
+                    return ReaderMath.computeScrollProgressPercent(current, total);
+                }
+                return total <= 1 ? 0 : ((current - 1) / (total - 1)) * 100;
+            }
             return (paraIdx / Math.max(1, currentParagraphs.length - 1)) * 100;
         }
 
@@ -3179,7 +3262,7 @@
                         ${generateBookCoverThumbHTML(book)}
                         <div class="overflow-hidden min-w-0 flex-1 space-y-1.5 py-0.5">
                             <h4 class="font-extrabold text-sm text-zinc-800 dark:text-zinc-100 truncate leading-snug">${escapeHtml(book.title)}</h4>
-                            <p class="text-[11px] text-zinc-400 font-bold leading-relaxed">读至第 ${resumePara + 1} 段 · 进度 ${Math.round(book.progress || 0)}%</p>
+                            <p class="text-[11px] text-zinc-400 font-bold leading-relaxed">读至进度 ${Math.round(book.progress || 0)}%</p>
                             <span class="text-[10px] text-zinc-400/90 font-medium block leading-relaxed">${readTime}</span>
                         </div>
                     </div>
@@ -3340,9 +3423,10 @@
             if (spineStart == null) return findParaByChapterTitle(entry.title);
 
             const spineEnd = getNextSpineStartPara(book.epubSpineStarts, spineStart);
-            if (entry.fragment) {
-                for (let i = spineStart; i < spineEnd; i++) {
-                    if (!isChapterPara(currentParagraphs[i])) continue;
+            for (let i = spineStart; i < spineEnd; i++) {
+                const catalogTitle = getCatalogEntryTitle(currentParagraphs[i]);
+                if (catalogTitle && headingSimilar(catalogTitle, entry.title)) return i;
+                if (isChapterPara(currentParagraphs[i])) {
                     const meta = getChapterMarkerMeta(currentParagraphs[i]);
                     if (meta && headingSimilar(meta.title, entry.title)) return i;
                 }
@@ -3497,7 +3581,7 @@
             const targetIdx = getChapterJumpTargetParaIndex(chapterParaIdx);
             closeCatalogPanel();
             await settleReaderViewportFrames(3);
-            jumpToParagraph(targetIdx, { behavior: 'auto' });
+            await executeReaderJump(targetIdx, { behavior: 'auto' });
         }
 
         function getReaderFontFamily() {
@@ -3577,13 +3661,14 @@
             return highlightParaText(slice, paraIdx, paraNotes);
         }
 
-        function createPagedParagraphEl(para, idx, bookNotes, isChapter, htmlOverride) {
+        function createPagedParagraphEl(para, idx, bookNotes, _isChapterArg, htmlOverride) {
             const p = document.createElement('p');
             p.setAttribute('data-para-idx', idx);
+            const isChapter = shouldUseChapterStyle(para);
             applyParagraphTypography(p, isChapter);
             if (isChapter) {
-                p.className = "reader-chapter-heading font-black text-zinc-900 dark:text-white mb-2 border-l-4 border-indigo-600 pl-4 select-text shrink-0";
-                p.innerText = formatChapterTitle(para);
+                p.className = getChapterParagraphClassName();
+                p.innerText = getChapterDisplayTitle(para);
             } else {
                 p.className = "text-justify cursor-pointer py-1 select-text shrink-0";
                 if (htmlOverride) {
@@ -3784,7 +3869,7 @@
                 }
 
                 const para = currentParagraphs[idx];
-                const isChapter = isChapterPara(para);
+                const isChapter = shouldUseChapterStyle(para);
 
                 if (isChapter) {
                     const block = { paraIdx: idx, el: createPagedParagraphEl(para, idx, bookNotes, true), isChapter: true };
@@ -3981,6 +4066,7 @@
 
             if (!pageLabel) return;
 
+            let labelText = '—';
             if (readerConfig.mode === 'paged') {
                 if (isPagedLayoutPending()) {
                     pageLabel.innerText = '正在排版…';
@@ -3989,13 +4075,14 @@
                 }
                 const total = pagedLayout.length;
                 const current = Math.min(total, Math.max(1, currentPageIndex + 1));
-                pageLabel.innerText = `第 ${current} / ${total} 页`;
+                labelText = `第 ${current} / ${total} 页`;
+                pageLabel.innerText = labelText;
                 pageLabel.title = `当前第 ${current} 页，共 ${total} 页`;
             } else if (currentParagraphs.length > 0) {
-                const total = currentParagraphs.length;
-                const current = Math.min(total, Math.max(1, currentParaIndex + 1));
-                pageLabel.innerText = `第 ${current} / ${total} 段`;
-                pageLabel.title = `当前第 ${current} 段，共 ${total} 段`;
+                const { current, total } = getScrollViewportPageInfo();
+                labelText = `第 ${current} / ${total} 页`;
+                pageLabel.innerText = labelText;
+                pageLabel.title = `当前第 ${current} 页，共 ${total} 页`;
             } else {
                 pageLabel.innerText = '—';
                 pageLabel.title = '';
@@ -4008,14 +4095,49 @@
             scrollToPageIndex(currentPageIndex, 'auto', currentParaIndex);
         }
 
-        function refreshScrollParagraphMarkup(paraIdx) {
+        function getChapterParagraphClassName() {
+            return "reader-chapter-heading font-black text-zinc-900 dark:text-white mt-6 mb-3 border-l-4 border-indigo-600 pl-4 select-text shrink-0";
+        }
+
+        function reapplyChapterStylesInDom() {
+            for (let i = 0; i < currentParagraphs.length; i++) {
+                if (!shouldUseChapterStyle(currentParagraphs[i])) continue;
+                const para = currentParagraphs[i];
+                document.querySelectorAll(`#reader-content [data-para-idx="${i}"]`).forEach((el) => {
+                    applyParagraphTypography(el, true);
+                    el.className = getChapterParagraphClassName();
+                    el.innerText = getChapterDisplayTitle(para);
+                });
+            }
+        }
+
+        function refreshParagraphMarkupInDom(paraIdx) {
             const bookNotes = db.notes[currentBook?.id] || [];
             const para = currentParagraphs[paraIdx];
-            if (!para || isChapterPara(para)) return;
+            if (!para || shouldUseChapterStyle(para)) return;
 
-            flushScrollRenderUntil(paraIdx);
-            document.querySelectorAll(`#reader-content [data-para-idx="${paraIdx}"]`).forEach((el) => {
-                el.innerHTML = highlightParaText(para, paraIdx, bookNotes);
+            if (readerConfig.mode === 'scroll') {
+                flushScrollRenderUntil(paraIdx);
+            }
+
+            const nodes = document.querySelectorAll(`#reader-content [data-para-idx="${paraIdx}"]`);
+            if (!nodes.length) return;
+
+            if (nodes.length === 1 && nodes[0].textContent === para) {
+                nodes[0].innerHTML = highlightParaText(para, paraIdx, bookNotes);
+                return;
+            }
+
+            let searchFrom = 0;
+            nodes.forEach((el) => {
+                if (el.classList.contains('reader-chapter-heading')) return;
+                const chunkText = el.textContent || '';
+                if (!chunkText) return;
+                let start = para.indexOf(chunkText, searchFrom);
+                if (start < 0) start = searchFrom;
+                const end = Math.min(para.length, start + chunkText.length);
+                el.innerHTML = highlightParaTextRange(para, paraIdx, bookNotes, start, end);
+                searchFrom = end;
             });
         }
 
@@ -4025,15 +4147,15 @@
                 .filter((idx) => Number.isFinite(idx) && idx >= 0))];
             if (!indices.length) return;
 
-            buildNotesIndex(db.notes[currentBook.id] || []);
+            const bookNotes = db.notes[currentBook.id] || [];
+            buildNotesIndex(bookNotes);
 
-            if (readerConfig.mode === 'scroll') {
-                indices.forEach(refreshScrollParagraphMarkup);
-                return;
+            if (activeScrollRender && activeScrollRender.generation === scrollRenderGeneration) {
+                activeScrollRender.bookNotes = bookNotes;
             }
 
-            invalidatePagedLayoutCache();
-            renderReaderContent({ restorePosition: true, keepVisible: true });
+            indices.forEach(refreshParagraphMarkupInDom);
+            reapplyChapterStylesInDom();
         }
 
         function renderReaderContent(options = {}) {
@@ -4064,6 +4186,9 @@
                 content.className = "max-w-2xl mx-auto leading-relaxed space-y-6 break-all font-serif";
                 renderScrollContentChunked(container, bookNotes, () => {
                     updateSliderProgress({ syncFromViewport: false });
+                    requestAnimationFrame(() => requestAnimationFrame(() => {
+                        updateReaderProgressLabel();
+                    }));
                     if (readerConfig.mode !== 'scroll') return;
                     if (pendingJumpParaIdx != null) {
                         const targetIdx = pendingJumpParaIdx;
@@ -4159,6 +4284,7 @@
         }
 
         function escapeHtml(str) {
+            if (window.ReaderMath) return ReaderMath.escapeHtml(str);
             return str
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
@@ -4188,12 +4314,12 @@
             p.id = `para-${idx}`;
             p.className = "text-justify cursor-pointer hover:bg-zinc-100/40 dark:hover:bg-zinc-800/10 px-2 py-1 rounded-xl transition-all duration-200 select-text";
             p.setAttribute('data-para-idx', idx);
-            const isChapter = isChapterPara(para);
+            const isChapter = shouldUseChapterStyle(para);
             applyParagraphTypography(p, isChapter);
 
             if (isChapter) {
-                p.className += " reader-chapter-heading font-black text-zinc-900 dark:text-white mt-8 mb-4 border-l-4 border-indigo-600 pl-3.5";
-                p.textContent = formatChapterTitle(para);
+                p.className = getChapterParagraphClassName();
+                p.textContent = getChapterDisplayTitle(para);
                 return p;
             }
 
@@ -4224,6 +4350,9 @@
                 activeScrollRender = null;
                 state.onDone?.();
                 return false;
+            }
+            if (state.cursor % 500 === 0) {
+                requestAnimationFrame(() => updateReaderProgressLabel());
             }
             return true;
         }
@@ -4774,7 +4903,9 @@
                 );
                 if (moved) return;
 
-                handleReaderTapNavigation(e.clientX);
+                if (!handleReaderTapNavigation(e.clientX) && getReaderTapZone(e.clientX) === 'center') {
+                    toggleReaderChrome();
+                }
             });
 
             const markPopover = document.getElementById('mark-action-popover');
@@ -5430,6 +5561,8 @@
                 if (closestIdx !== currentParaIndex) {
                     currentParaIndex = closestIdx;
                     updateSliderProgress({ syncFromViewport: false });
+                } else {
+                    updateReaderProgressLabel();
                 }
             } else if (pagedLayout.length) {
                 const activePageIdx = getActivePageIndexFromViewport();
@@ -5449,12 +5582,11 @@
 
         function navigatePage(direction) {
             if (readerConfig.mode === 'scroll') {
-                if (direction === 'prev') {
-                    currentParaIndex = Math.max(0, currentParaIndex - 1);
-                } else {
-                    currentParaIndex = Math.min(currentParagraphs.length - 1, currentParaIndex + 1);
-                }
-                scrollToParagraph(currentParaIndex);
+                const { current, total } = getScrollViewportPageInfo();
+                const nextPage = direction === 'prev'
+                    ? Math.max(1, current - 1)
+                    : Math.min(total, current + 1);
+                scrollToViewportPage(nextPage);
             } else {
                 if (!pagedLayout.length) return;
                 if (direction === 'next' && currentPageIndex >= pagedLayout.length - 1) return;
@@ -5483,9 +5615,11 @@
                         : Math.floor((value / 100) * (currentParagraphs.length - 1)));
                 scrollToPageIndex(targetPage, 'auto', currentParaIndex);
             } else {
-                const targetIdx = Math.floor((value / 100) * (currentParagraphs.length - 1));
-                currentParaIndex = targetIdx;
-                scrollToParagraph(targetIdx);
+                const { total } = getScrollViewportPageInfo();
+                const targetPage = total <= 1
+                    ? 1
+                    : Math.max(1, Math.min(total, Math.round((value / 100) * (total - 1)) + 1));
+                scrollToViewportPage(targetPage, 'auto');
             }
             updateSliderProgress({ syncFromViewport: false });
             if (speechIsPlaying) resumeSpeechFromPosition(currentParaIndex);
@@ -5519,25 +5653,140 @@
             tryScroll();
         }
 
+        function clearTtsWordHighlight() {
+            if (typeof CSS !== 'undefined' && CSS.highlights) {
+                CSS.highlights.delete('speech-word');
+            }
+        }
+
         function clearParagraphHighlight() {
             document.getElementById('reader-content')?.querySelectorAll('p[data-para-idx]').forEach(p => {
                 p.classList.remove('speech-highlight');
             });
+            clearTtsWordHighlight();
         }
 
-        function highlightActiveParagraphInViewport(idx) {
-            const paras = document.getElementById('reader-content').querySelectorAll('p[data-para-idx]');
-            paras.forEach(p => p.classList.remove('speech-highlight'));
+        function getParaIdxFromChunkChar(segments, charIndex) {
+            if (!segments?.length) return null;
+            for (let i = segments.length - 1; i >= 0; i--) {
+                if (charIndex >= segments[i].charStart) return segments[i].paraIdx;
+            }
+            return segments[0].paraIdx;
+        }
 
-            if (readerConfig.mode === 'paged') {
-                const pageEl = document.getElementById(`page-${currentPageIndex}`);
-                const target = pageEl?.querySelector(`[data-para-idx="${idx}"]`);
-                if (target) target.classList.add('speech-highlight');
+        function getWordEndInText(text, charIndex) {
+            let end = Math.max(0, charIndex);
+            while (end < text.length && !/\s/.test(text[end])) end++;
+            return Math.max(charIndex + 1, end);
+        }
+
+        function getTextRangeForPlainOffset(rootEl, startOffset, endOffset) {
+            if (!rootEl || endOffset <= startOffset) return null;
+            const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+            let counted = 0;
+            let startNode = null;
+            let startOff = 0;
+            let endNode = null;
+            let endOff = 0;
+            let node;
+            while ((node = walker.nextNode())) {
+                const len = node.textContent.length;
+                if (!startNode && counted + len > startOffset) {
+                    startNode = node;
+                    startOff = startOffset - counted;
+                }
+                if (!endNode && counted + len >= endOffset) {
+                    endNode = node;
+                    endOff = endOffset - counted;
+                    break;
+                }
+                counted += len;
+            }
+            if (!startNode || !endNode) return null;
+            try {
+                const range = document.createRange();
+                range.setStart(startNode, Math.max(0, startOff));
+                range.setEnd(endNode, Math.max(0, endOff));
+                return range;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function updateTtsSpeechHighlight(paraIdx, chunkCharIndex, chunkText, segments) {
+            highlightActiveParagraphInViewport(paraIdx, paraIdx);
+            if (chunkCharIndex == null || !segments?.length) return;
+
+            const seg = segments.find((s) => s.paraIdx === paraIdx);
+            if (!seg) return;
+
+            const localStart = Math.max(0, chunkCharIndex - seg.charStart);
+            const localEnd = Math.min(seg.charEnd - seg.charStart, getWordEndInText(chunkText, chunkCharIndex) - seg.charStart);
+            const el = document.querySelector(`#reader-content [data-para-idx="${paraIdx}"]`);
+            if (!el || typeof Highlight === 'undefined' || !CSS?.highlights) return;
+
+            const range = getTextRangeForPlainOffset(el, localStart, Math.max(localStart + 1, localEnd));
+            if (!range) return;
+            try {
+                clearTtsWordHighlight();
+                CSS.highlights.set('speech-word', new Highlight(range));
+            } catch (e) {}
+        }
+
+        function followTtsReadingPosition(paraIdx, options = {}) {
+            if (!Number.isFinite(paraIdx) || paraIdx < 0) return;
+
+            const prevParaIndex = ttsActiveIndex ?? currentParaIndex;
+            const prevPageIndex = currentPageIndex;
+            currentParaIndex = paraIdx;
+            ttsActiveIndex = paraIdx;
+
+            const canFollowVisually = document.visibilityState === 'visible' || options.forceScroll;
+            if (!canFollowVisually) {
+                updateMediaSessionProgress();
                 return;
             }
 
-            const target = document.querySelector(`#reader-content [data-para-idx="${idx}"]`);
-            if (target) target.classList.add('speech-highlight');
+            readerJumpLockUntil = Date.now() + 700;
+            const behavior = options.smooth === false ? 'auto' : 'smooth';
+
+            if (readerConfig.mode === 'scroll') {
+                if (paraIdx !== prevParaIndex || options.forceScroll) {
+                    ensureParagraphRendered(paraIdx);
+                    scrollToParagraph(paraIdx, behavior);
+                }
+            } else {
+                const pageIdx = getPageIndexForParagraph(paraIdx);
+                if (pageIdx !== prevPageIndex || paraIdx !== prevParaIndex || options.forceScroll) {
+                    scrollToPageIndex(pageIdx, behavior, paraIdx);
+                    currentPageIndex = pageIdx;
+                }
+            }
+
+            updateSliderProgress({ syncFromViewport: false });
+            updateMediaSessionProgress();
+        }
+
+        function highlightActiveParagraphInViewport(idx, endIdx = idx) {
+            const paras = document.getElementById('reader-content')?.querySelectorAll('p[data-para-idx]');
+            paras?.forEach(p => p.classList.remove('speech-highlight'));
+
+            const start = Math.min(idx, endIdx);
+            const end = Math.max(idx, endIdx);
+
+            if (readerConfig.mode === 'paged') {
+                const pageEl = document.getElementById(`page-${currentPageIndex}`);
+                for (let i = start; i <= end; i++) {
+                    const target = pageEl?.querySelector(`[data-para-idx="${i}"]`);
+                    if (target) target.classList.add('speech-highlight');
+                }
+                return;
+            }
+
+            for (let i = start; i <= end; i++) {
+                const target = document.querySelector(`#reader-content [data-para-idx="${i}"]`);
+                if (target) target.classList.add('speech-highlight');
+            }
         }
 
         function getCatalogItemClass(isCurrent, depth = 1) {
@@ -5785,6 +6034,203 @@
             return ranked[0] || voices.find((voice) => voice.default) || voices[0] || null;
         }
 
+        function initSilentPlayer() {
+            const player = document.getElementById('silent-player');
+            if (!player || player.dataset.ready) return;
+            try {
+                const sampleRate = 22050;
+                const durationSec = 2;
+                const numSamples = sampleRate * durationSec;
+                const buffer = new ArrayBuffer(44 + numSamples * 2);
+                const view = new DataView(buffer);
+                const writeStr = (offset, str) => {
+                    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+                };
+                writeStr(0, 'RIFF');
+                view.setUint32(4, 36 + numSamples * 2, true);
+                writeStr(8, 'WAVE');
+                writeStr(12, 'fmt ');
+                view.setUint32(16, 16, true);
+                view.setUint16(20, 1, true);
+                view.setUint16(22, 1, true);
+                view.setUint32(24, sampleRate, true);
+                view.setUint32(28, sampleRate * 2, true);
+                view.setUint16(32, 2, true);
+                view.setUint16(34, 16, true);
+                writeStr(36, 'data');
+                view.setUint32(40, numSamples * 2, true);
+                ttsSilentUrl = URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+                player.src = ttsSilentUrl;
+                player.dataset.ready = '1';
+                player.addEventListener('pause', () => {
+                    if (speechIsPlaying) {
+                        player.play().catch(() => {});
+                    }
+                });
+            } catch (e) {
+                player.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+                player.dataset.ready = '1';
+            }
+        }
+
+        function ensureTtsKeepAlive() {
+            initSilentPlayer();
+            const silentPlayer = document.getElementById('silent-player');
+            if (!silentPlayer) return;
+            silentPlayer.volume = 0.02;
+            silentPlayer.muted = false;
+            const playPromise = silentPlayer.play();
+            if (playPromise) playPromise.catch(() => {});
+
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                if (!ttsAudioContext) ttsAudioContext = new AudioCtx();
+                if (ttsAudioContext.state === 'suspended') {
+                    ttsAudioContext.resume().catch(() => {});
+                }
+                if (!ttsKeepAliveNode) {
+                    const gain = ttsAudioContext.createGain();
+                    gain.gain.value = 0.0001;
+                    const osc = ttsAudioContext.createOscillator();
+                    osc.frequency.value = 440;
+                    osc.connect(gain);
+                    gain.connect(ttsAudioContext.destination);
+                    osc.start();
+                    ttsKeepAliveNode = osc;
+                }
+            } catch (e) {}
+
+            if (speechIsPlaying && 'mediaSession' in navigator) {
+                navigator.mediaSession.playbackState = 'playing';
+            }
+        }
+
+        function releaseTtsKeepAlive() {
+            const silentPlayer = document.getElementById('silent-player');
+            if (silentPlayer) silentPlayer.pause();
+            if (ttsKeepAliveNode) {
+                try { ttsKeepAliveNode.stop(); } catch (e) {}
+                ttsKeepAliveNode = null;
+            }
+            if (ttsAudioContext && ttsAudioContext.state !== 'closed') {
+                ttsAudioContext.close().catch(() => {});
+                ttsAudioContext = null;
+            }
+        }
+
+        function startTtsWatchdog() {
+            stopTtsWatchdog();
+            ttsKeepAliveTimer = setInterval(() => {
+                if (!speechIsPlaying) return;
+                ensureTtsKeepAlive();
+                if (!speechSynth) return;
+                if (speechSynth.paused) {
+                    speechSynth.resume();
+                    return;
+                }
+                if (document.visibilityState === 'hidden') {
+                    updateMediaSessionProgress();
+                }
+                if (!speechSynth.speaking && Date.now() - ttsLastSpeechAt > 2500) {
+                    const resumeIdx = ttsChunkEndIdx != null
+                        ? getNextSpeakableParaIndex(ttsChunkEndIdx + 1)
+                        : getNextSpeakableParaIndex(currentParaIndex);
+                    if (resumeIdx < currentParagraphs.length) {
+                        speakParagraph(resumeIdx);
+                    } else {
+                        stopSpeech();
+                    }
+                }
+            }, 1500);
+        }
+
+        function stopTtsWatchdog() {
+            if (ttsKeepAliveTimer) {
+                clearInterval(ttsKeepAliveTimer);
+                ttsKeepAliveTimer = null;
+            }
+        }
+
+        function updateMediaSessionProgress() {
+            if (!('mediaSession' in navigator) || !currentBook || currentParagraphs.length === 0) return;
+            let duration = Math.max(1, currentParagraphs.length);
+            let position = Math.max(1, (ttsActiveIndex ?? currentParaIndex) + 1);
+
+            if (speechIsPlaying && ttsActiveIndex != null) {
+                duration = Math.max(1, currentParagraphs.length);
+                position = ttsActiveIndex + 1;
+            } else if (readerConfig.mode === 'scroll') {
+                const { current, total } = getScrollViewportPageInfo();
+                duration = total;
+                position = current;
+            } else if (readerConfig.mode === 'paged' && pagedLayout.length > 0) {
+                duration = pagedLayout.length;
+                position = Math.min(duration, Math.max(1, currentPageIndex + 1));
+            }
+
+            try {
+                navigator.mediaSession.setPositionState({
+                    duration,
+                    playbackRate: speechSpeed,
+                    position
+                });
+            } catch (e) {}
+        }
+
+        function handleTtsBackgroundState() {
+            if (!speechIsPlaying && !isTtsSessionActive()) return;
+            ensureTtsKeepAlive();
+            startTtsWatchdog();
+            if (speechSynth?.paused) {
+                speechSynth.resume();
+            } else if (speechIsPlaying && speechSynth && !speechSynth.speaking) {
+                resumeSpeechFromPosition(currentParaIndex);
+            }
+            if ('mediaSession' in navigator) {
+                navigator.mediaSession.playbackState = speechIsPlaying ? 'playing' : 'paused';
+            }
+        }
+
+        function handleTtsPageHide() {
+            if (speechIsPlaying) handleTtsBackgroundState();
+        }
+
+        function handleTtsPageShow() {
+            if (speechIsPlaying) {
+                ensureTtsKeepAlive();
+                if (speechSynth?.paused) speechSynth.resume();
+            }
+        }
+
+        function handleTtsWindowBlur() {
+            if (speechIsPlaying) handleTtsBackgroundState();
+        }
+
+        function handleTtsWindowFocus() {
+            if (speechIsPlaying && speechSynth && !speechSynth.speaking && !speechSynth.paused
+                && Date.now() - ttsLastSpeechAt > 1500) {
+                resumeSpeechFromPosition(currentParaIndex);
+            }
+        }
+
+        function buildTtsChunk(startIdx, maxChars = TTS_CHUNK_MAX_CHARS) {
+            let text = '';
+            let endIdx = startIdx;
+            const segments = [];
+            for (let i = getNextSpeakableParaIndex(startIdx); i < currentParagraphs.length; i++) {
+                const paraText = getSpeakableParagraphText(i);
+                if (!paraText) continue;
+                const addition = text ? `\n\n${paraText}` : paraText;
+                if (text.length + addition.length > maxChars && text.length > 0) break;
+                const charStart = text.length;
+                text += addition;
+                segments.push({ paraIdx: i, charStart, charEnd: text.length });
+                endIdx = i;
+            }
+            return { text, endIdx, segments, nextIdx: endIdx + 1 };
+        }
+
         function initTtsVoices() {
             if (!speechSynth) return;
             const select = document.getElementById('tts-voice-select');
@@ -5851,6 +6297,8 @@
                 navigator.mediaSession.setActionHandler('pause', () => togglePlaySpeech());
                 navigator.mediaSession.setActionHandler('previoustrack', () => seekSpeech('prev'));
                 navigator.mediaSession.setActionHandler('nexttrack', () => seekSpeech('next'));
+                navigator.mediaSession.setActionHandler('stop', () => stopSpeech());
+                updateMediaSessionProgress();
             }
         }
 
@@ -5894,10 +6342,16 @@
         function scheduleSpeakParagraph(idx, delayMs = 60) {
             clearTimeout(ttsSpeakTimer);
             const token = ++ttsSpeakToken;
-            ttsSpeakTimer = setTimeout(() => {
+            const delay = document.visibilityState === 'hidden' ? 0 : delayMs;
+            const run = () => {
                 if (token !== ttsSpeakToken || !speechIsPlaying) return;
                 speakParagraph(idx);
-            }, delayMs);
+            };
+            if (delay <= 0) {
+                run();
+            } else {
+                ttsSpeakTimer = setTimeout(run, delay);
+            }
         }
 
         function speakParagraph(idx) {
@@ -5917,14 +6371,21 @@
                 return;
             }
 
-            const text = getSpeakableParagraphText(targetIdx);
+            const chunk = buildTtsChunk(targetIdx);
+            const text = chunk.text;
             if (!text) {
                 scheduleSpeakParagraph(targetIdx + 1, 0);
                 return;
             }
 
             currentParaIndex = targetIdx;
+            ttsChunkEndIdx = chunk.endIdx;
+            ttsChunkSegments = chunk.segments;
+            ttsCurrentChunkText = text;
+            ttsLastBoundaryAt = 0;
             speechIsPlaying = true;
+            ensureTtsKeepAlive();
+            startTtsWatchdog();
             updateTtsPlaybackUi();
             speechUtterance = new SpeechSynthesisUtterance(text);
 
@@ -5941,29 +6402,46 @@
             speechUtterance.onstart = () => {
                 if (speakToken !== ttsSpeakToken) return;
                 ttsActiveIndex = targetIdx;
+                ttsLastSpeechAt = Date.now();
+                ensureTtsKeepAlive();
                 readerJumpLockUntil = Date.now() + 800;
 
-                if (readerConfig.mode === 'scroll') {
-                    scrollToParagraph(targetIdx);
-                } else {
-                    scrollToPageOfParagraph(targetIdx);
-                }
+                followTtsReadingPosition(targetIdx, { forceScroll: true, smooth: false });
+                updateTtsSpeechHighlight(targetIdx, 0, text, chunk.segments);
 
                 document.getElementById('tts-play-btn').innerHTML = '<i data-lucide="pause" class="w-6 h-6 text-white fill-white"></i>';
                 updateTtsPlaybackUi();
-                highlightActiveParagraphInViewport(targetIdx);
+                updateMediaSessionProgress();
+                if ('mediaSession' in navigator) {
+                    navigator.mediaSession.playbackState = 'playing';
+                }
+            };
 
-                const silentPlayer = document.getElementById('silent-player');
-                silentPlayer.play().catch(e => console.log("静音伴音开始工作", e));
+            speechUtterance.onboundary = (e) => {
+                if (speakToken !== ttsSpeakToken || !speechIsPlaying) return;
+                if (e.name !== 'word' && e.name !== 'sentence') return;
+                ttsLastBoundaryAt = Date.now();
+                ttsLastSpeechAt = Date.now();
+                const paraIdx = getParaIdxFromChunkChar(chunk.segments, e.charIndex);
+                if (paraIdx == null) return;
+                if (paraIdx !== ttsActiveIndex) {
+                    followTtsReadingPosition(paraIdx);
+                }
+                updateTtsSpeechHighlight(paraIdx, e.charIndex, text, chunk.segments);
+                updateMediaSessionProgress();
             };
 
             speechUtterance.onend = () => {
                 if (speakToken !== ttsSpeakToken || !speechIsPlaying) return;
-                const nextIdx = getNextSpeakableParaIndex(targetIdx + 1);
+                ttsLastSpeechAt = Date.now();
+                clearTtsWordHighlight();
+                const nextIdx = getNextSpeakableParaIndex(chunk.endIdx + 1);
                 if (nextIdx < currentParagraphs.length) {
                     currentParaIndex = nextIdx;
-                    updateSliderProgress({ syncFromViewport: false });
-                    scheduleSpeakParagraph(nextIdx);
+                    if (document.visibilityState === 'visible') {
+                        updateSliderProgress({ syncFromViewport: false });
+                    }
+                    scheduleSpeakParagraph(nextIdx, 0);
                 } else {
                     stopSpeech();
                     showToast("全书知识汲取完毕！");
@@ -5972,30 +6450,33 @@
 
             speechUtterance.onerror = (e) => {
                 if (speakToken !== ttsSpeakToken) return;
-                if (e.error !== 'interrupted' && e.error !== 'canceled') {
-                    stopSpeech();
+                if (e.error === 'interrupted' || e.error === 'canceled') return;
+                if (document.visibilityState === 'hidden' && speechIsPlaying) {
+                    scheduleSpeakParagraph(currentParaIndex, 500);
+                    return;
                 }
+                stopSpeech();
             };
 
             speechSynth.speak(speechUtterance);
         }
 
         function togglePlaySpeech() {
-            const silentPlayer = document.getElementById('silent-player');
-
             if (speechIsPlaying) {
                 clearTimeout(ttsSpeakTimer);
                 ttsSpeakToken++;
                 speechSynth.pause();
                 speechIsPlaying = false;
-                silentPlayer.pause();
+                stopTtsWatchdog();
+                releaseTtsKeepAlive();
                 updateTtsPlaybackUi();
                 showToast("伴读已暂停工作");
                 if ('mediaSession' in navigator) {
                     navigator.mediaSession.playbackState = "paused";
                 }
             } else {
-                silentPlayer.play().catch(() => {});
+                ensureTtsKeepAlive();
+                startTtsWatchdog();
                 if (speechSynth.paused) {
                     speechSynth.resume();
                     speechIsPlaying = true;
@@ -6012,12 +6493,16 @@
         function stopSpeech() {
             clearTimeout(ttsSpeakTimer);
             ttsSpeakToken++;
+            stopTtsWatchdog();
             if (speechSynth) {
                 speechSynth.cancel();
             }
             speechIsPlaying = false;
             ttsActiveIndex = null;
-            document.getElementById('silent-player').pause();
+            ttsChunkEndIdx = null;
+            ttsChunkSegments = null;
+            ttsCurrentChunkText = '';
+            releaseTtsKeepAlive();
             updateTtsPlaybackUi();
             
             clearParagraphHighlight();
@@ -6040,15 +6525,17 @@
             } else {
                 currentParaIndex = Math.max(0, currentParaIndex - 1);
             }
-            if (readerConfig.mode === 'scroll') {
-                scrollToParagraph(currentParaIndex);
-            } else {
-                scrollToPageOfParagraph(currentParaIndex);
+            ttsChunkEndIdx = null;
+            ttsChunkSegments = null;
+            ttsCurrentChunkText = '';
+            if (document.visibilityState === 'visible') {
+                followTtsReadingPosition(currentParaIndex, { forceScroll: true, smooth: false });
             }
             updateSliderProgress();
             if (speechIsPlaying) {
                 speakParagraph(currentParaIndex);
             }
+            updateMediaSessionProgress();
         }
 
         function addToHistory(bookId, paraIdx) {
@@ -6088,6 +6575,25 @@
                 persistReadingPosition({ syncFromViewport: true });
                 clearTimeout(readingPositionSaveTimer);
                 saveToLocalStorage().catch(() => {});
+                if (speechIsPlaying) {
+                    handleTtsBackgroundState();
+                }
+            } else if (speechIsPlaying) {
+                ensureTtsKeepAlive();
+                startTtsWatchdog();
+                if (speechSynth?.paused) {
+                    speechSynth.resume();
+                } else if (speechSynth && !speechSynth.speaking) {
+                    resumeSpeechFromPosition(currentParaIndex);
+                } else if (ttsActiveIndex != null) {
+                    followTtsReadingPosition(ttsActiveIndex, { forceScroll: true, smooth: false });
+                    updateTtsSpeechHighlight(
+                        ttsActiveIndex,
+                        ttsLastBoundaryAt ? null : 0,
+                        ttsCurrentChunkText,
+                        ttsChunkSegments
+                    );
+                }
             }
             isReadingSessionActive = document.visibilityState === 'visible';
         }
@@ -6367,26 +6873,6 @@
                 closeCatalogPanel();
             }
         }
-    </script>
-    <script>
-        (async function disableStaleServiceWorker() {
-            try {
-                if ('serviceWorker' in navigator) {
-                    const regs = await navigator.serviceWorker.getRegistrations();
-                    await Promise.all(regs.map((reg) => reg.unregister()));
-                }
-                if ('caches' in window) {
-                    const keys = await caches.keys();
-                    await Promise.all(
-                        keys
-                            .filter((key) => key.startsWith('cognito-reader'))
-                            .map((key) => caches.delete(key))
-                    );
-                }
-            } catch (err) {
-                console.warn('清理旧离线缓存失败:', err);
-            }
-        })();
     </script>
 </body>
 </html>

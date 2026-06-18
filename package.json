@@ -4,10 +4,14 @@
   "private": true,
   "description": "我思故我在 · 智能艺术阅读空间",
   "scripts": {
-    "start": "npx --yes serve -l 3000 --no-clipboard .",
-    "dev": "npm run start"
+    "start": "serve -l 3000 --no-clipboard .",
+    "dev": "npm run start",
+    "test": "node --test tests/smoke.test.js"
   },
   "dependencies": {
     "foliate-js": "^1.0.1"
+  },
+  "devDependencies": {
+    "serve": "^14.2.4"
   }
 }
