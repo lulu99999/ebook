@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cognito-reader-v14';
+const CACHE_NAME = 'cognito-reader-v15';
 
 const PRECACHE_URLS = [
     '/',
@@ -11,6 +11,7 @@ const PRECACHE_URLS = [
     '/vendor/tailwindcdn.js',
     '/vendor/lucide.min.js',
     '/vendor/pdf.min.js',
+    '/vendor/pdf.worker.min.js',
     '/vendor/jszip.min.js',
     '/vendor/mobi.js',
     '/vendor/foliate-zip.js',

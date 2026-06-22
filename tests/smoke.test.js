@@ -47,3 +47,15 @@ test('resolveStartParaIndex resumes last paragraph', () => {
     const book = { progress: 20, lastReadPara: 42 };
     assert.equal(ReaderMath.resolveStartParaIndex(book, null), 42);
 });
+
+test('formatReaderImagePara and parseReaderImagePara round-trip', () => {
+    const para = ReaderMath.formatReaderImagePara('data:image/jpeg;base64,abc', '封面图');
+    assert.ok(ReaderMath.isReaderImagePara(para));
+    assert.equal(ReaderMath.parseReaderImagePara(para).src, 'data:image/jpeg;base64,abc');
+    assert.equal(ReaderMath.parseReaderImagePara(para).alt, '封面图');
+});
+
+test('isReaderImagePara rejects plain text', () => {
+    assert.equal(ReaderMath.isReaderImagePara('普通段落'), false);
+    assert.equal(ReaderMath.isReaderImagePara('[READER-IMG:incomplete'), false);
+});

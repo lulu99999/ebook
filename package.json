@@ -6,7 +6,7 @@
   "scripts": {
     "start": "serve -l 3000 --no-clipboard .",
     "dev": "npm run start",
-    "test": "node --test tests/smoke.test.js"
+    "test": "node tests/run-smoke.js"
   },
   "dependencies": {
     "foliate-js": "^1.0.1"
